@@ -1,13 +1,24 @@
 import 'dart:io';
-import 'package:flutter/material.dart';
-import 'package:table_calendar/table_calendar.dart';
-import 'package:image_picker/image_picker.dart';
 
+import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:table_calendar/table_calendar.dart';
+
+import 'package:toeic_master_front/core/api.dart';
+import 'package:toeic_master_front/core/api_client.dart';
+import 'package:toeic_master_front/core/token_storage.dart';
+
+/// ===============================
+/// Models
+/// ===============================
 class TestSchedule {
   final String title;
   final TimeOfDay startTime;
   final TimeOfDay endTime;
   final DateTime date;
+
   TestSchedule({
     required this.title,
     required this.startTime,
@@ -16,6 +27,9 @@ class TestSchedule {
   });
 }
 
+/// ===============================
+/// MyPage
+/// ===============================
 class MyPage extends StatefulWidget {
   // ✅ 부모(main.dart)에서 내려주는 현재 상태
   final bool isLoggedIn;
@@ -46,8 +60,10 @@ class MyPage extends StatefulWidget {
 }
 
 class _MyPageState extends State<MyPage> {
-  // ✅ 이 페이지 내부에서 “유저별 저장소”는 그대로 유지
+  // ✅ 이 페이지 내부에서 “유저별 저장소”는 그대로 유지(로컬 UI용)
   final Map<String, Map<String, dynamic>> _userDataStorage = {};
+
+  String? _profileImageUrl; // ✅ 서버에 저장된 프로필 이미지 URL
 
   // ✅ 페이지 내부 표시용 로컬 상태(부모 값과 동기화)
   late String _nickname;
@@ -55,21 +71,69 @@ class _MyPageState extends State<MyPage> {
   late String _email;
   File? _profileImage;
 
+  // (백엔드 프로필 bio를 myGoal로 매핑해서 사용)
+  String _bio = '';
+
   final Map<DateTime, List<TestSchedule>> _events = {};
   final CalendarFormat _calendarFormat = CalendarFormat.month;
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay;
 
+  late final TokenStorage _tokenStorage;
+  late final Api _api;
+
   @override
   void initState() {
     super.initState();
+    _tokenStorage = TokenStorage();
+    _api = Api(ApiClient(_tokenStorage));
+
     _syncFromParent();
+
+    // ✅ 앱 재실행 시 토큰이 남아있으면 내 프로필 자동 로드
+    _bootstrapAuth();
+  }
+
+  Future<void> _bootstrapAuth() async {
+    final token = await _tokenStorage.readAccessToken();
+    if (token == null || token.isEmpty) return;
+
+    try {
+      final profileRes = await _api.getMyProfile();
+      final data = profileRes['data'] as Map<String, dynamic>?;
+
+      final email = (data?['email'] ?? '') as String;
+      final nickname = (data?['nickname'] ?? '닉네임') as String;
+      final bio = (data?['bio'] ?? '') as String;
+
+      final profileImageUrl = (data?['profileImageUrl'] as String?)?.trim();
+
+
+      if (!mounted) return;
+
+      setState(() {
+        _email = email;
+        _nickname = nickname;
+        _bio = bio;
+        _myGoal = bio.isEmpty ? '목표를 적어보세요' : bio;
+
+        _profileImageUrl = (profileImageUrl != null && profileImageUrl.isNotEmpty)
+            ? profileImageUrl
+            : null;
+      });
+
+      // 부모에 로그인 상태 반영
+      widget.onLogin(_email, _nickname, _myGoal, _profileImage);
+    } catch (_) {
+      // 토큰이 만료/무효면 정리
+      await _tokenStorage.clear();
+    }
   }
 
   @override
   void didUpdateWidget(covariant MyPage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 부모 상태가 바뀌면 내 로컬 상태도 맞춰줌
+
     if (oldWidget.isLoggedIn != widget.isLoggedIn ||
         oldWidget.email != widget.email ||
         oldWidget.nickname != widget.nickname ||
@@ -84,15 +148,67 @@ class _MyPageState extends State<MyPage> {
     _myGoal = widget.myGoal;
     _email = widget.email;
     _profileImage = widget.profileImage;
+
+    // myGoal이 bio 역할이므로 동기화
+    _bio = (_myGoal == '목표를 적어보세요') ? '' : _myGoal;
   }
 
-  Future<void> _pickImage(StateSetter setDialogState) async {
+  Future<void> _pickImage(StateSetter setDialogState, BuildContext dialogContext) async {
     final picker = ImagePicker();
     final pickedFile = await picker.pickImage(source: ImageSource.gallery);
-    if (pickedFile != null) {
-      setDialogState(() => _profileImage = File(pickedFile.path));
-      setState(() {});
+    if (pickedFile == null) return;
+
+    final file = File(pickedFile.path);
+
+    // 1) 로컬 미리보기 즉시 반영
+    setDialogState(() => _profileImage = file);
+    setState(() {});
+
+    try {
+      // 2) 서버 업로드
+      final uploadRes = await _api.uploadMyProfileImage(file);
+
+      // 3) 서버가 내려준 URL을 상태에 반영 (중요!)
+      final data = uploadRes['data'] as Map<String, dynamic>?;
+      final url = (data?['profileImageUrl'] as String?)?.trim();
+
+      if (!mounted) return;
+      setState(() {
+        _profileImageUrl = (url != null && url.isNotEmpty) ? url : _profileImageUrl;
+      });
+
+      // 부모에도 반영 (StudyPage 등 즉시 갱신)
+      widget.onProfileUpdated(_nickname, _myGoal, _profileImage);
+
+      // 4) ✅ 사진 수정 완료 → 정보 수정 창 닫기
+      Navigator.of(dialogContext).pop();
+
+      _showSnack('프로필 사진이 저장됐어요.');
+    } catch (e) {
+      _showSnack('프로필 사진 업로드 실패: $e');
     }
+  }
+
+
+
+  Future<void> _logout() async {
+    await _tokenStorage.clear();
+
+    if (!mounted) return;
+    setState(() {
+      _email = '';
+      _nickname = '닉네임';
+      _myGoal = '목표를 적어보세요';
+      _bio = '';
+      _profileImage = null;
+    });
+
+    widget.onLogout();
+  }
+
+  void _showSnack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
@@ -111,16 +227,7 @@ class _MyPageState extends State<MyPage> {
             padding: const EdgeInsets.only(right: 16.0),
             child: Center(
               child: InkWell(
-                onTap: () {
-                  setState(() {
-                    // 로컬도 리셋
-                    _email = '';
-                    _nickname = '닉네임';
-                    _myGoal = '목표를 적어보세요';
-                    _profileImage = null;
-                  });
-                  widget.onLogout();
-                },
+                onTap: _logout,
                 borderRadius: BorderRadius.circular(20),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -133,7 +240,8 @@ class _MyPageState extends State<MyPage> {
                     children: [
                       Icon(Icons.logout, size: 14, color: Colors.grey),
                       SizedBox(width: 4),
-                      Text('로그아웃', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                      Text('로그아웃',
+                          style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
@@ -179,9 +287,16 @@ class _MyPageState extends State<MyPage> {
               CircleAvatar(
                 radius: 35,
                 backgroundColor: Colors.white,
-                backgroundImage: _profileImage != null ? FileImage(_profileImage!) : null,
-                child: _profileImage == null ? const Icon(Icons.face, size: 50, color: Colors.lightGreen) : null,
+                backgroundImage: _profileImage != null
+                    ? FileImage(_profileImage!)
+                    : (_profileImageUrl != null && _profileImageUrl!.isNotEmpty
+                    ? NetworkImage(_profileImageUrl!)
+                    : null) as ImageProvider?,
+                child: (_profileImage == null && (_profileImageUrl == null || _profileImageUrl!.isEmpty))
+                    ? const Icon(Icons.face, size: 50, color: Colors.lightGreen)
+                    : null,
               ),
+
               const SizedBox(width: 15),
               Expanded(
                 child: Column(
@@ -201,7 +316,9 @@ class _MyPageState extends State<MyPage> {
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(20),
-              boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 5))],
+              boxShadow: [
+                BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 5))
+              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -233,7 +350,8 @@ class _MyPageState extends State<MyPage> {
     );
   }
 
-  void _showEditInfoDialog() {
+  Future<void> _showEditInfoDialog() async {
+    bool imageChanged = false;
     final nameController = TextEditingController(text: _nickname);
     final goalController = TextEditingController(text: _myGoal == '목표를 적어보세요' ? '' : _myGoal);
 
@@ -248,15 +366,24 @@ class _MyPageState extends State<MyPage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 GestureDetector(
-                  onTap: () => _pickImage(setDialogState),
+                  onTap: () async {
+                    await _pickImage(setDialogState, context); // 여기 context는 다이얼로그 context
+                  },
                   child: Stack(
                     children: [
                       CircleAvatar(
-                        radius: 40,
-                        backgroundColor: Colors.grey[200],
-                        backgroundImage: _profileImage != null ? FileImage(_profileImage!) : null,
-                        child: _profileImage == null ? const Icon(Icons.camera_alt, color: Colors.grey) : null,
+                        radius: 35,
+                        backgroundColor: Colors.white,
+                        backgroundImage: _profileImage != null
+                            ? FileImage(_profileImage!)
+                            : (_profileImageUrl != null && _profileImageUrl!.isNotEmpty
+                            ? NetworkImage(_profileImageUrl!)
+                            : null) as ImageProvider?,
+                        child: (_profileImage == null && (_profileImageUrl == null || _profileImageUrl!.isEmpty))
+                            ? const Icon(Icons.face, size: 50, color: Colors.lightGreen)
+                            : null,
                       ),
+
                       const Positioned(
                         right: 0,
                         bottom: 0,
@@ -268,7 +395,7 @@ class _MyPageState extends State<MyPage> {
                 const SizedBox(height: 20),
                 TextField(controller: nameController, decoration: const InputDecoration(labelText: '닉네임')),
                 const SizedBox(height: 16),
-                TextField(controller: goalController, decoration: const InputDecoration(labelText: '나의 목표')),
+                TextField(controller: goalController, decoration: const InputDecoration(labelText: '나의 목표(=소개 bio)')),
               ],
             ),
           ),
@@ -278,18 +405,29 @@ class _MyPageState extends State<MyPage> {
                 Expanded(child: TextButton(onPressed: () => Navigator.pop(context), child: const Text('취소'))),
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: () {
-                      setState(() {
-                        _nickname = nameController.text.trim().isEmpty ? '닉네임' : nameController.text.trim();
-                        _myGoal = goalController.text.trim().isEmpty ? '목표를 적어보세요' : goalController.text.trim();
-                        _userDataStorage[_email] = {'nickname': _nickname, 'goal': _myGoal, 'image': _profileImage};
-                      });
+                    onPressed: () async {
+                      final newNickname = nameController.text.trim().isEmpty ? '닉네임' : nameController.text.trim();
+                      final newBio = goalController.text.trim();
 
-                      // ✅ 부모 업데이트 (StudyPage 닉네임도 즉시 바뀜)
-                      widget.onProfileUpdated(_nickname, _myGoal, _profileImage);
+                      try {
+                        await _api.updateMyProfile(nickname: newNickname, bio: newBio);
 
-                      Navigator.pop(context);
+                        if (!mounted) return;
+                        setState(() {
+                          _nickname = newNickname;
+                          _bio = newBio;
+                          _myGoal = newBio.isEmpty ? '목표를 적어보세요' : newBio;
+                        });
+
+                        widget.onProfileUpdated(_nickname, _myGoal, _profileImage);
+
+                        Navigator.pop(context);
+                        _showSnack('프로필이 저장됐어요.');
+                      } catch (e) {
+                        _showSnack('프로필 저장 실패: $e');
+                      }
                     },
+
                     style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFCDE1AF), foregroundColor: Colors.black),
                     child: const Text('저장하기'),
                   ),
@@ -328,31 +466,29 @@ class _MyPageState extends State<MyPage> {
         children: [
           GestureDetector(
             onTap: () async {
-              final result = await Navigator.push(context, MaterialPageRoute(builder: (context) => const LoginPage()));
-              if (result != null && result is String) {
-                // 로그인 성공 (email 반환)
-                final email = result;
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => LoginPage(api: _api, tokenStorage: _tokenStorage)),
+              );
 
-                // 저장된 유저 데이터 있으면 불러오기
-                String nickname = '닉네임';
-                String goal = '목표를 적어보세요';
-                File? image;
-
-                if (_userDataStorage.containsKey(email)) {
-                  nickname = _userDataStorage[email]!['nickname'] as String? ?? '닉네임';
-                  goal = _userDataStorage[email]!['goal'] as String? ?? '목표를 적어보세요';
-                  image = _userDataStorage[email]!['image'] as File?;
-                }
+              // 로그인 성공 시: LoginResult 반환
+              if (result != null && result is LoginResult) {
+                final email = result.email;
+                final nickname = result.nickname;
+                final bio = result.bio;
 
                 setState(() {
                   _email = email;
-                  _nickname = nickname;
-                  _myGoal = goal;
-                  _profileImage = image;
+                  _nickname = nickname.isEmpty ? '닉네임' : nickname;
+                  _bio = bio;
+                  _myGoal = bio.isEmpty ? '목표를 적어보세요' : bio;
+
+                  // (로컬 캐시 유지)
+                  _userDataStorage[email] = {'nickname': _nickname, 'goal': _myGoal, 'image': _profileImage};
                 });
 
-                // ✅ 부모에게 로그인 상태 전달 (StudyPage도 즉시 반영)
-                widget.onLogin(email, nickname, goal, image);
+                // ✅ 부모에게 로그인 상태 전달
+                widget.onLogin(_email, _nickname, _myGoal, _profileImage);
               }
             },
             child: Row(
@@ -593,8 +729,30 @@ class _MyPageState extends State<MyPage> {
   }
 }
 
+/// ===============================
+/// Login / Signup Pages
+/// ===============================
+class LoginResult {
+  final String email;
+  final String nickname;
+  final String bio;
+
+  LoginResult({
+    required this.email,
+    required this.nickname,
+    required this.bio,
+  });
+}
+
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  const LoginPage({
+    super.key,
+    required this.api,
+    required this.tokenStorage,
+  });
+
+  final Api api;
+  final TokenStorage tokenStorage;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -602,6 +760,54 @@ class LoginPage extends StatefulWidget {
 
 class _LoginPageState extends State<LoginPage> {
   final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _pwController = TextEditingController();
+
+  bool _loading = false;
+
+  String _prettyDioError(Object e) {
+    if (e is DioException) {
+      final status = e.response?.statusCode;
+      final msg = e.response?.data?['message'] ?? e.message ?? '요청 실패';
+      return '($status) $msg';
+    }
+    return e.toString();
+  }
+
+  Future<void> _handleLogin() async {
+    final email = _emailController.text.trim();
+    final pw = _pwController.text;
+
+    if (email.isEmpty || pw.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('이메일/비밀번호를 입력하세요.')));
+      return;
+    }
+
+    setState(() => _loading = true);
+
+    try {
+      final token = await widget.api.login(email: email, password: pw);
+      await widget.tokenStorage.saveAccessToken(token);
+
+      // 로그인 후 내 프로필까지 가져와서 닉네임/바이오 세팅
+      final profileRes = await widget.api.getMyProfile();
+      final data = profileRes['data'] as Map<String, dynamic>?;
+
+      final nickname = (data?['nickname'] ?? '닉네임') as String;
+      final bio = (data?['bio'] ?? '') as String;
+      final profileEmail = (data?['email'] ?? email) as String;
+
+      if (!mounted) return;
+      Navigator.pop(
+        context,
+        LoginResult(email: profileEmail, nickname: nickname, bio: bio),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('로그인 실패: ${_prettyDioError(e)}')));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -628,18 +834,34 @@ class _LoginPageState extends State<LoginPage> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
                 child: Column(
                   children: [
-                    TextField(controller: _emailController, decoration: const InputDecoration(labelText: '이메일', labelStyle: TextStyle(color: Colors.grey))),
+                    TextField(
+                      controller: _emailController,
+                      decoration: const InputDecoration(labelText: '이메일', labelStyle: TextStyle(color: Colors.grey)),
+                    ),
                     const SizedBox(height: 20),
-                    const TextField(obscureText: true, decoration: InputDecoration(labelText: '비밀번호', labelStyle: TextStyle(color: Colors.grey))),
+                    TextField(
+                      controller: _pwController,
+                      obscureText: true,
+                      decoration: const InputDecoration(labelText: '비밀번호', labelStyle: TextStyle(color: Colors.grey)),
+                    ),
                     const SizedBox(height: 40),
                     ElevatedButton(
-                      onPressed: () => Navigator.pop(context, _emailController.text),
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green, minimumSize: const Size(double.infinity, 50), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-                      child: const Text('로그인 하기', style: TextStyle(color: Colors.white)),
+                      onPressed: _loading ? null : _handleLogin,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        minimumSize: const Size(double.infinity, 50),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: _loading
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('로그인 하기', style: TextStyle(color: Colors.white)),
                     ),
                     const SizedBox(height: 20),
                     GestureDetector(
-                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const SignUpPage())),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => SignUpPage(api: widget.api)),
+                      ),
                       child: RichText(
                         text: const TextSpan(
                           style: TextStyle(color: Colors.grey, fontSize: 14),
@@ -662,21 +884,72 @@ class _LoginPageState extends State<LoginPage> {
 }
 
 class SignUpPage extends StatefulWidget {
-  const SignUpPage({super.key});
+  const SignUpPage({super.key, required this.api});
+
+  final Api api;
 
   @override
   State<SignUpPage> createState() => _SignUpPageState();
 }
 
 class _SignUpPageState extends State<SignUpPage> {
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _nicknameController = TextEditingController();
   final TextEditingController _pwController = TextEditingController();
   final TextEditingController _pwConfirmController = TextEditingController();
+
   bool _isPasswordCorrect = true;
+  bool _isPasswordLengthValid = true;
+  bool _loading = false;
 
   void _checkPassword() {
     setState(() {
-      _isPasswordCorrect = _pwController.text == _pwConfirmController.text;
+      _isPasswordLengthValid = _pwController.text.length >= 6;
+      _isPasswordCorrect =
+          _pwController.text == _pwConfirmController.text;
     });
+  }
+
+  String _prettyDioError(Object e) {
+    if (e is DioException) {
+      final status = e.response?.statusCode;
+      final msg = e.response?.data?['message'] ?? e.message ?? '요청 실패';
+      return '($status) $msg';
+    }
+    return e.toString();
+  }
+
+  Future<void> _handleSignup() async {
+    final email = _emailController.text.trim();
+    final nickname = _nicknameController.text.trim();
+    final pw = _pwController.text;
+
+    if (pw.length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('비밀번호는 6자 이상이어야 합니다.')),
+      );
+      return;
+    }
+
+    if (email.isEmpty || nickname.isEmpty || pw.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('이메일/닉네임/비밀번호를 모두 입력하세요.')));
+      return;
+    }
+    if (!_isPasswordCorrect) return;
+
+    setState(() => _loading = true);
+
+    try {
+      await widget.api.signup(email: email, password: pw, nickname: nickname);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('회원가입 성공! 로그인 해주세요.')));
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('회원가입 실패: ${_prettyDioError(e)}')));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   @override
@@ -696,11 +969,22 @@ class _SignUpPageState extends State<SignUpPage> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
                 child: Column(
                   children: [
-                    const TextField(decoration: InputDecoration(labelText: '이름')),
+                    TextField(controller: _nicknameController, decoration: const InputDecoration(labelText: '닉네임')),
                     const SizedBox(height: 20),
-                    const TextField(decoration: InputDecoration(labelText: '이메일')),
+                    TextField(controller: _emailController, decoration: const InputDecoration(labelText: '이메일')),
                     const SizedBox(height: 20),
-                    TextField(controller: _pwController, obscureText: true, decoration: const InputDecoration(labelText: '비밀번호'), onChanged: (_) => _checkPassword()),
+                    TextField(
+                      controller: _pwController,
+                      obscureText: true,
+                      decoration: InputDecoration(
+                        labelText: '비밀번호',
+                        errorText: _isPasswordLengthValid
+                            ? null
+                            : '비밀번호는 6자 이상 입력하세요',
+                      ),
+                      onChanged: (_) => _checkPassword(),
+                    ),
+
                     const SizedBox(height: 20),
                     TextField(
                       controller: _pwConfirmController,
@@ -714,9 +998,15 @@ class _SignUpPageState extends State<SignUpPage> {
                     ),
                     const SizedBox(height: 40),
                     ElevatedButton(
-                      onPressed: _isPasswordCorrect ? () => Navigator.pop(context) : null,
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green, minimumSize: const Size(double.infinity, 50), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-                      child: const Text('가입하기', style: TextStyle(color: Colors.white)),
+                      onPressed: _loading ? null : (_isPasswordCorrect ? _handleSignup : null),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        minimumSize: const Size(double.infinity, 50),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: _loading
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('가입하기', style: TextStyle(color: Colors.white)),
                     )
                   ],
                 ),
