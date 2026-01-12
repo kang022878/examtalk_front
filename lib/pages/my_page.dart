@@ -111,16 +111,198 @@ class _MyPageState extends State<MyPage> {
   late final TokenStorage _tokenStorage;
   late final Api _api;
 
+  late final ApiClient _apiClient;
+
+  // ✅ 내 리뷰 갤러리 상태
+  final List<MyGalleryItem> _gallery = [];
+  bool _galleryLoading = false;
+  bool _galleryRefreshing = false;
+  bool _galleryHasMore = true;
+  int _galleryPage = 0;
+  final int _gallerySize = 30;
+  final ScrollController _galleryScrollController = ScrollController();
+
   @override
   void initState() {
     super.initState();
     _tokenStorage = TokenStorage();
-    _api = Api(ApiClient(_tokenStorage));
+    _apiClient = ApiClient(_tokenStorage); // ✅ 추가
+    _api = Api(_apiClient);
 
     _syncFromParent();
-
-    // ✅ 앱 재실행 시 토큰이 남아있으면 내 프로필 자동 로드
     _bootstrapAuth();
+
+    _galleryScrollController.addListener(_onGalleryScroll);
+  }
+
+  @override
+  void dispose() {
+    _galleryScrollController.dispose();
+    super.dispose();
+  }
+
+  void _openGalleryViewer({required int initialIndex}) {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return Dialog(
+          insetPadding: EdgeInsets.zero,
+          backgroundColor: Colors.black,
+          child: Stack(
+            children: [
+              PageView.builder(
+                controller: PageController(initialPage: initialIndex),
+                itemCount: _gallery.length,
+                itemBuilder: (context, i) {
+                  final g = _gallery[i];
+                  return Stack(
+                    children: [
+                      Center(
+                        child: InteractiveViewer(
+                          child: Image.network(
+                            g.imageUrl,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) =>
+                            const Icon(Icons.broken_image_outlined, color: Colors.white),
+                          ),
+                        ),
+                      ),
+
+                      // ⬇️ 하단 학교명 + 날짜
+                      Positioned(
+                        left: 12,
+                        right: 12,
+                        bottom: 18,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              g.schoolName,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${g.createdAt.year}.${g.createdAt.month.toString().padLeft(2, '0')}.${g.createdAt.day.toString().padLeft(2, '0')}',
+                              style: const TextStyle(color: Colors.white70, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+
+              // ❌ 좌측 상단 닫기 버튼 (유지)
+              Positioned(
+                top: 14,
+                left: 12,
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white, size: 26),
+                  onPressed: () => Navigator.pop(ctx),
+                ),
+              ),
+
+              // ❌❌ 우측 상단 X 버튼 (추가!)
+              Positioned(
+                top: 14,
+                right: 12,
+                child: GestureDetector(
+                  onTap: () => Navigator.pop(ctx),
+                  child: Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.5),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.close,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _onGalleryScroll() {
+    if (!_galleryHasMore || _galleryLoading || _galleryRefreshing) return;
+
+    // 스크롤이 아래쪽에 가까워지면 다음 페이지 로드
+    final pos = _galleryScrollController.position;
+    if (pos.pixels >= pos.maxScrollExtent - 300) {
+      _loadMyGallery(nextPage: true);
+    }
+  }
+
+  Future<void> _refreshMyGallery() async {
+    if (!widget.isLoggedIn) return;
+    if (_galleryRefreshing) return;
+
+    setState(() {
+      _galleryRefreshing = true;
+      _galleryHasMore = true;
+      _galleryPage = 0;
+      _gallery.clear();
+    });
+
+    try {
+      await _loadMyGallery(nextPage: false);
+    } finally {
+      if (mounted) setState(() => _galleryRefreshing = false);
+    }
+  }
+
+  Future<void> _loadMyGallery({required bool nextPage}) async {
+    if (!widget.isLoggedIn) return;
+    if (_galleryLoading) return;
+    if (!_galleryHasMore) return;
+
+    setState(() => _galleryLoading = true);
+
+    try {
+      final pageToLoad = nextPage ? _galleryPage + 1 : 0;
+
+      final res = await _apiClient.dio.get(
+        '/api/users/me/gallery',
+        queryParameters: {
+          'page': pageToLoad,
+          'size': _gallerySize,
+        },
+      );
+
+      final decoded = res.data as Map<String, dynamic>;
+      final data = decoded['data'] as Map<String, dynamic>?;
+
+      final content = (data?['content'] as List<dynamic>?) ?? const [];
+      final last = (data?['last'] as bool?) ?? true;
+
+      final items = content
+          .map((e) => MyGalleryItem.fromJson(e as Map<String, dynamic>))
+          .where((x) => x.imageUrl.trim().isNotEmpty)
+          .toList();
+
+      if (!mounted) return;
+      setState(() {
+        _gallery.addAll(items);
+        _galleryPage = pageToLoad;
+        _galleryHasMore = !last && items.isNotEmpty;
+      });
+    } catch (e) {
+      if (mounted) _showSnack('내 리뷰 사진 불러오기 실패: $e');
+    } finally {
+      if (mounted) setState(() => _galleryLoading = false);
+    }
   }
 
   Future<void> _bootstrapAuth() async {
@@ -153,6 +335,7 @@ class _MyPageState extends State<MyPage> {
 
       // 부모에 로그인 상태 반영
       widget.onLogin(_email, _nickname, _myGoal, _profileImage);
+      await _refreshMyGallery();
     } catch (_) {
       // 토큰이 만료/무효면 정리
       await _tokenStorage.clear();
@@ -169,6 +352,16 @@ class _MyPageState extends State<MyPage> {
         oldWidget.myGoal != widget.myGoal ||
         oldWidget.profileImage?.path != widget.profileImage?.path) {
       _syncFromParent();
+    }
+    if (!oldWidget.isLoggedIn && widget.isLoggedIn) {
+      _refreshMyGallery();
+    }
+    if (oldWidget.isLoggedIn && !widget.isLoggedIn) {
+      setState(() {
+        _gallery.clear();
+        _galleryHasMore = true;
+        _galleryPage = 0;
+      });
     }
   }
 
@@ -230,6 +423,9 @@ class _MyPageState extends State<MyPage> {
       _myGoal = '목표를 적어보세요';
       _bio = '';
       _profileImage = null;
+      _gallery.clear();
+      _galleryHasMore = true;
+      _galleryPage = 0;
     });
 
     widget.onLogout();
@@ -649,20 +845,121 @@ class _MyPageState extends State<MyPage> {
   }
 
   Widget _buildReviewGallery() {
+    if (!widget.isLoggedIn) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 16.0),
+        child: Text('로그인하면 내가 올린 리뷰 사진을 볼 수 있어요.', style: TextStyle(color: Colors.black54)),
+      );
+    }
+
+    if (_galleryRefreshing && _gallery.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 16.0),
+        child: Center(
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: CircularProgressIndicator(),
+          ),
+        ),
+      );
+    }
+
+    if (_gallery.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('아직 올린 리뷰 사진이 없어요.', style: TextStyle(color: Colors.black54)),
+            const SizedBox(height: 10),
+            OutlinedButton(
+              onPressed: _refreshMyGallery,
+              child: const Text('새로고침'),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0),
-      child: GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 3, crossAxisSpacing: 8, mainAxisSpacing: 8),
-        itemCount: 6,
-        itemBuilder: (context, index) => Container(
-          decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(8)),
-          child: const Icon(Icons.image, color: Colors.white),
+      child: RefreshIndicator(
+        onRefresh: _refreshMyGallery,
+        child: GridView.builder(
+          controller: _galleryScrollController,
+          shrinkWrap: true,
+          physics: const AlwaysScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+          ),
+          itemCount: _gallery.length + (_galleryHasMore ? 1 : 0),
+          itemBuilder: (context, index) {
+            if (index >= _gallery.length) {
+              // ✅ 다음 페이지 로딩 표시
+              return const Center(
+                child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+              );
+            }
+
+            final item = _gallery[index];
+
+            return GestureDetector(
+              onTap: () => _openGalleryViewer(initialIndex: index),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.network(
+                      item.imageUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        color: Colors.grey[300],
+                        alignment: Alignment.center,
+                        child: const Icon(Icons.broken_image_outlined, color: Colors.white),
+                      ),
+                      loadingBuilder: (context, child, loadingProgress) {
+                        if (loadingProgress == null) return child;
+                        return Container(
+                          color: Colors.grey[200],
+                          alignment: Alignment.center,
+                          child: const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        );
+                      },
+                    ),
+
+                    // ✅ 아래쪽에 학교명 살짝 오버레이 (원하면 제거 가능)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                        color: Colors.black.withOpacity(0.35),
+                        child: Text(
+                          item.schoolName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
   }
+
 
   void _showAddEventDialog(DateTime date) {
     final titleController = TextEditingController();
