@@ -27,6 +27,35 @@ class TestSchedule {
   });
 }
 
+class MyGalleryItem {
+  final int imageId;
+  final String imageUrl;
+  final int reviewId;
+  final int schoolId;
+  final String schoolName;
+  final DateTime createdAt;
+
+  MyGalleryItem({
+    required this.imageId,
+    required this.imageUrl,
+    required this.reviewId,
+    required this.schoolId,
+    required this.schoolName,
+    required this.createdAt,
+  });
+
+  factory MyGalleryItem.fromJson(Map<String, dynamic> json) {
+    return MyGalleryItem(
+      imageId: (json['imageId'] as num).toInt(),
+      imageUrl: (json['imageUrl'] ?? '') as String,
+      reviewId: (json['reviewId'] as num).toInt(),
+      schoolId: (json['schoolId'] as num).toInt(),
+      schoolName: (json['schoolName'] ?? '') as String,
+      createdAt: DateTime.tryParse((json['createdAt'] ?? '') as String) ?? DateTime.now(),
+    );
+  }
+}
+
 /// ===============================
 /// MyPage
 /// ===============================

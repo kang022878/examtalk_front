@@ -4,7 +4,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_naver_map/flutter_naver_map.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
+import 'package:toeic_master_front/core/api.dart';
+import 'package:toeic_master_front/core/api_client.dart';
+import 'package:toeic_master_front/core/token_storage.dart';
+import 'package:dio/dio.dart';
+
 import 'package:image_picker/image_picker.dart';
 
 /// ====== Models ======
@@ -98,26 +102,62 @@ class TestCenterPage extends StatefulWidget {
 }
 
 class _TestCenterPageState extends State<TestCenterPage> {
+
+  late final ApiClient _apiClient;
+  late final Api _api;
+
   NaverMapController? _mapController;
 
   final TextEditingController _searchController = TextEditingController();
 
   bool _isMovingToMyLocation = false;
   bool _isLoadingSchools = false;
+  bool _isSchoolSheetOpen = false;
 
   List<School> _schools = [];
   final Map<int, NMarker> _schoolMarkers = {}; // schoolId -> marker
 
   Position? _myPosition;
 
-  /// 서버 베이스 URL
-  static const String _baseUrl = 'http://13.209.42.76:8080';
+  String? _myNickname;
+
+  void _closeSchoolSheetIfOpen() {
+    if (_isSchoolSheetOpen) {
+      _isSchoolSheetOpen = false; // ✅ 중요: 닫기 전에 먼저 내려줘야 재오픈 가드에 안 걸림
+      Navigator.of(context).pop();
+    }
+  }
+
 
   @override
   void initState() {
     super.initState();
+    _apiClient = ApiClient(TokenStorage());
+    _api = Api(_apiClient);
+
     _loadMyPositionSilently();
+
+    _loadMyNicknameSilently();
   }
+
+  Future<void> _loadMyNicknameSilently() async {
+    try {
+      final res = await _apiClient.dio.get('/api/users/me');
+      final decoded = res.data as Map<String, dynamic>;
+      final data = decoded['data'];
+
+      String? nickname;
+      if (data is Map<String, dynamic>) {
+        nickname = (data['nickname'] ?? data['name'] ?? data['userNickname']) as String?;
+      }
+
+      if (!mounted) return;
+      setState(() => _myNickname = nickname);
+    } catch (_) {
+      // 로그인 안 했거나 /me 엔드포인트 없으면 null로 둠
+    }
+  }
+
 
   @override
   void dispose() {
@@ -152,27 +192,19 @@ class _TestCenterPageState extends State<TestCenterPage> {
 
   /// ====== API: 전체 학교 ======
   Future<List<School>> _fetchAllSchools() async {
-    final uri = Uri.parse('$_baseUrl/api/schools');
-    final res = await http.get(uri, headers: {'Content-Type': 'application/json'});
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw Exception('학교 목록 조회 실패: ${res.statusCode}');
-    }
-    final decoded = jsonDecode(res.body) as Map<String, dynamic>;
-    final data = decoded['data'] as List<dynamic>? ?? [];
+    final res = await _apiClient.dio.get('/api/schools');
+    final data = (res.data as Map<String, dynamic>)['data'] as List<dynamic>? ?? [];
     return data.map((e) => School.fromJson(e as Map<String, dynamic>)).toList();
   }
 
+
   /// ====== API: 학교 검색 ======
   Future<List<School>> _searchSchoolsByName(String name) async {
-    final uri = Uri.parse('$_baseUrl/api/schools/search')
-        .replace(queryParameters: {'name': name});
-    final res = await http.get(uri, headers: {'Content-Type': 'application/json'});
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw Exception('학교 검색 실패: ${res.statusCode}');
-    }
-
-    final decoded = jsonDecode(res.body) as Map<String, dynamic>;
-    final data = decoded['data'] as List<dynamic>? ?? [];
+    final res = await _apiClient.dio.get(
+      '/api/schools/search',
+      queryParameters: {'name': name},
+    );
+    final data = (res.data as Map<String, dynamic>)['data'] as List<dynamic>? ?? [];
     return data.map((e) => School.fromJson(e as Map<String, dynamic>)).toList();
   }
 
@@ -181,42 +213,28 @@ class _TestCenterPageState extends State<TestCenterPage> {
     required double lat,
     required double lng,
   }) async {
-    final uri = Uri.parse('$_baseUrl/api/schools/nearby').replace(
-      queryParameters: {
-        'lat': lat.toString(),
-        'lng': lng.toString(),
-      },
+    final res = await _apiClient.dio.get(
+      '/api/schools/nearby',
+      queryParameters: {'lat': lat, 'lng': lng},
     );
-
-    final res = await http.get(uri, headers: {'Content-Type': 'application/json'});
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw Exception('주변 학교 조회 실패: ${res.statusCode}');
-    }
-
-    final decoded = jsonDecode(res.body) as Map<String, dynamic>;
-    final data = decoded['data'] as List<dynamic>? ?? [];
+    final data = (res.data as Map<String, dynamic>)['data'] as List<dynamic>? ?? [];
     return data.map((e) => School.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   /// ====== API: 리뷰 목록 ======
   Future<List<ReviewItem>> _fetchReviewsForSchool(int schoolId) async {
-    final uri = Uri.parse('$_baseUrl/api/schools/$schoolId/reviews').replace(
+    final res = await _apiClient.dio.get(
+      '/api/schools/$schoolId/reviews',
       queryParameters: {
-        'page': '0',
-        'size': '50',
+        'page': 0,
+        'size': 50,
         'sort': 'createdAt,desc',
       },
     );
 
-    final res = await http.get(uri, headers: {'Content-Type': 'application/json'});
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw Exception('리뷰 목록 조회 실패: ${res.statusCode}');
-    }
-
-    final decoded = jsonDecode(res.body) as Map<String, dynamic>;
+    final decoded = res.data as Map<String, dynamic>;
     final data = decoded['data'];
 
-    // 백엔드가 리스트 또는 Page 형태로 줄 수 있어서 둘 다 처리
     List<dynamic> list;
     if (data is List) {
       list = data;
@@ -235,8 +253,8 @@ class _TestCenterPageState extends State<TestCenterPage> {
     return list.map((e) => ReviewItem.fromJson(e as Map<String, dynamic>)).toList();
   }
 
+
   /// ====== API: 리뷰 작성 ======
-  /// swagger 응답 예시: { success, message, data: { id, ... } }
   Future<int> _createReview({
     required int schoolId,
     required int rating,
@@ -246,8 +264,6 @@ class _TestCenterPageState extends State<TestCenterPage> {
     required bool quiet,
     required bool accessible,
   }) async {
-    final uri = Uri.parse('$_baseUrl/api/schools/$schoolId/reviews');
-
     final body = {
       'rating': rating,
       'content': content,
@@ -257,17 +273,12 @@ class _TestCenterPageState extends State<TestCenterPage> {
       'accessible': accessible,
     };
 
-    final res = await http.post(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
+    final res = await _apiClient.dio.post(
+      '/api/schools/$schoolId/reviews',
+      data: body,
     );
 
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw Exception('리뷰 작성 실패: ${res.statusCode}\n${res.body}');
-    }
-
-    final decoded = jsonDecode(res.body) as Map<String, dynamic>;
+    final decoded = res.data as Map<String, dynamic>;
     final data = decoded['data'];
 
     if (data is Map<String, dynamic>) {
@@ -278,30 +289,334 @@ class _TestCenterPageState extends State<TestCenterPage> {
     throw Exception('리뷰 작성 응답에서 reviewId를 찾을 수 없음');
   }
 
+  /// ====== API: 리뷰 수정 ======
+  Future<void> _updateReview({
+    required int reviewId,
+    required int rating,
+    required String content,
+    required bool recommended,
+    required bool facilityGood,
+    required bool quiet,
+    required bool accessible,
+  }) async {
+    final body = {
+      'rating': rating,
+      'content': content,
+      'recommended': recommended,
+      'facilityGood': facilityGood,
+      'quiet': quiet,
+      'accessible': accessible,
+    };
+
+    await _apiClient.dio.put(
+      '/api/reviews/$reviewId',
+      data: body,
+    );
+  }
+
+  Future<bool?> _showAlreadyReviewedDialog() async {
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('알림'),
+          content: const Text('이미 리뷰를 작성한 장소입니다.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('닫기'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF5E9B4B),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('수정하기'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<bool?> _showEditReviewDialog({
+    required School school,
+    required ReviewItem review,
+  }) async {
+    bool recommended = review.recommended;
+    bool facilityGood = review.facilityGood;
+    bool quiet = review.quiet;
+    bool accessible = review.accessible;
+
+    File? pickedImage;
+    String contentText = review.content;
+
+    bool submitting = false;
+
+    Future<void> pickImage(StateSetter setStateDialog) async {
+      final picker = ImagePicker();
+      final xfile = await picker.pickImage(source: ImageSource.gallery);
+      if (xfile == null) return;
+      setStateDialog(() => pickedImage = File(xfile.path));
+    }
+
+    return await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setStateDialog) {
+            return Dialog(
+              insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
+              backgroundColor: Colors.transparent,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(22, 18, 22, 18),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: const Color(0xFF8DBB6A), width: 1),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('리뷰 수정', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 14),
+
+                      const Text('이 고사장을 추천하나요?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          _toggleButton(
+                            label: '추천',
+                            selected: recommended == true,
+                            onTap: submitting ? () {} : () => setStateDialog(() => recommended = true),
+                          ),
+                          const SizedBox(width: 10),
+                          _toggleButton(
+                            label: '비추천',
+                            selected: recommended == false,
+                            onTap: submitting ? () {} : () => setStateDialog(() => recommended = false),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      const Text('시험장 시설은 어땠나요?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          _toggleButton(
+                            label: '좋아요',
+                            selected: facilityGood == true,
+                            onTap: submitting ? () {} : () => setStateDialog(() => facilityGood = true),
+                          ),
+                          const SizedBox(width: 10),
+                          _toggleButton(
+                            label: '별로예요',
+                            selected: facilityGood == false,
+                            onTap: submitting ? () {} : () => setStateDialog(() => facilityGood = false),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      const Text('전체적으로 조용한 환경인가요?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          _toggleButton(
+                            label: '조용해요',
+                            selected: quiet == true,
+                            onTap: submitting ? () {} : () => setStateDialog(() => quiet = true),
+                          ),
+                          const SizedBox(width: 10),
+                          _toggleButton(
+                            label: '시끄러워요',
+                            selected: quiet == false,
+                            onTap: submitting ? () {} : () => setStateDialog(() => quiet = false),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      const Text('교통은 어떤가요?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 10),
+                      Column(
+                        children: [
+                          _toggleButton(
+                            label: '자가용도 괜찮아요',
+                            selected: accessible == true,
+                            onTap: submitting ? () {} : () => setStateDialog(() => accessible = true),
+                          ),
+                          const SizedBox(width: 10),
+                          _toggleButton(
+                            label: '대중교통을 추천해요',
+                            selected: accessible == false,
+                            onTap: submitting ? () {} : () => setStateDialog(() => accessible = false),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 18),
+
+                      const Text('사진 업로드(선택)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          ElevatedButton(
+                            onPressed: submitting ? null : () => pickImage(setStateDialog),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.grey[200],
+                              foregroundColor: Colors.black87,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            child: const Text('파일 선택'),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              pickedImage == null ? '선택한 파일이 없습니다' : pickedImage!.path.split('/').last,
+                              style: const TextStyle(color: Colors.black54),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (pickedImage != null) ...[
+                            const SizedBox(width: 8),
+                            IconButton(
+                              tooltip: '선택 취소',
+                              onPressed: submitting ? null : () => setStateDialog(() => pickedImage = null),
+                              icon: const Icon(Icons.close, size: 18),
+                            ),
+                          ],
+                        ],
+                      ),
+
+                      const SizedBox(height: 18),
+
+                      const Text('리뷰 내용', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 10),
+                      TextField(
+                        minLines: 4,
+                        maxLines: 6,
+                        enabled: !submitting,
+                        controller: TextEditingController(text: contentText),
+                        onChanged: (v) => contentText = v,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+
+                      const SizedBox(height: 18),
+
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: submitting ? null : () => Navigator.pop(dialogContext, false),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.black87,
+                                side: const BorderSide(color: Colors.black26),
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                              ),
+                              child: const Text('취소', style: TextStyle(fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: submitting
+                                  ? null
+                                  : () async {
+                                final text = contentText.trim();
+                                if (text.isEmpty) {
+                                  _showSnack('리뷰 내용을 입력해주세요!');
+                                  return;
+                                }
+
+                                setStateDialog(() => submitting = true);
+
+                                try {
+                                  final rating = recommended ? 5 : 1;
+
+                                  await _updateReview(
+                                    reviewId: review.id,
+                                    rating: rating,
+                                    content: text,
+                                    recommended: recommended,
+                                    facilityGood: facilityGood,
+                                    quiet: quiet,
+                                    accessible: accessible,
+                                  );
+
+                                  if (pickedImage != null) {
+                                    await _uploadReviewImage(reviewId: review.id, imageFile: pickedImage!);
+                                  }
+
+                                  if (!mounted) return;
+                                  Navigator.pop(dialogContext, true);
+                                } catch (e) {
+                                  _showSnack('수정 실패: $e');
+                                  if (mounted) setStateDialog(() => submitting = false);
+                                }
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF5E9B4B),
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                              ),
+                              child: submitting
+                                  ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                                  : const Text('수정하기', style: TextStyle(fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   /// ====== API: 리뷰 이미지 업로드 (multipart) ======
   Future<void> _uploadReviewImage({
     required int reviewId,
     required File imageFile,
   }) async {
-    final uri = Uri.parse('$_baseUrl/api/reviews/$reviewId/images');
+    final formData = FormData.fromMap({
+      'files': [
+        await MultipartFile.fromFile(
+          imageFile.path,
+          filename: imageFile.path.split('/').last,
+        ),
+      ],
+    });
 
-    final req = http.MultipartRequest('POST', uri);
-
-    // 서버가 필드명을 images/file/image 등으로 받을 수 있어서
-    // 기본은 images로 보내고, 필요하면 여기만 바꾸면 됨.
-    req.files.add(
-      await http.MultipartFile.fromPath(
-        'images',
-        imageFile.path,
+    await _apiClient.dio.post(
+      '/api/reviews/$reviewId/images',
+      data: formData,
+      options: Options(
+        headers: {Headers.contentTypeHeader: null}, // boundary 자동
       ),
     );
-
-    final streamed = await req.send();
-    final respBody = await streamed.stream.bytesToString();
-
-    if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
-      throw Exception('이미지 업로드 실패: ${streamed.statusCode}\n$respBody');
-    }
   }
 
   /// ====== (4)+(5) 합쳐서: 리뷰 작성 + 이미지 업로드 ======
@@ -314,7 +629,6 @@ class _TestCenterPageState extends State<TestCenterPage> {
     required String content,
     File? imageFile,
   }) async {
-    // UI에 별점 입력이 없어서 임시로 rating을 추천이면 5, 비추천이면 1로 둠
     final rating = recommended ? 5 : 1;
 
     final reviewId = await _createReview(
@@ -336,7 +650,6 @@ class _TestCenterPageState extends State<TestCenterPage> {
   Future<void> _applySchoolsToMap(List<School> schools) async {
     if (_mapController == null) return;
 
-    // 기존 마커 제거
     for (final m in _schoolMarkers.values) {
       try {
         await _mapController!.deleteOverlay(m.info);
@@ -366,7 +679,6 @@ class _TestCenterPageState extends State<TestCenterPage> {
 
     setState(() => _isLoadingSchools = true);
     try {
-      // 초기에는 전체 학교를 기본으로
       final schools = await _fetchAllSchools();
       if (!mounted) return;
       await _applySchoolsToMap(schools);
@@ -457,7 +769,6 @@ class _TestCenterPageState extends State<TestCenterPage> {
             onPressed: () async {
               _searchController.clear();
               setState(() {});
-              // 검색 지우면 전체로 복구
               setState(() => _isLoadingSchools = true);
               try {
                 final schools = await _fetchAllSchools();
@@ -504,7 +815,6 @@ class _TestCenterPageState extends State<TestCenterPage> {
     );
   }
 
-  /// ====== 내 위치 이동 + 주변 학교 붙이기(2번) ======
   Future<void> _moveToMyLocation() async {
     if (_mapController == null) return;
 
@@ -546,7 +856,6 @@ class _TestCenterPageState extends State<TestCenterPage> {
         ),
       );
 
-      // ✅ 주변 학교로 갱신
       setState(() => _isLoadingSchools = true);
       try {
         final nearby = await _fetchNearbySchools(
@@ -575,6 +884,10 @@ class _TestCenterPageState extends State<TestCenterPage> {
     required School school,
     required List<ReviewItem> reviews,
   }) {
+
+    if (_isSchoolSheetOpen) return;
+    _isSchoolSheetOpen = true;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -582,93 +895,135 @@ class _TestCenterPageState extends State<TestCenterPage> {
       builder: (context) {
         final distanceText = _distanceTextToSchool(school);
 
-        return DraggableScrollableSheet(
-          initialChildSize: 0.62,
-          minChildSize: 0.35,
-          maxChildSize: 0.88,
-          builder: (context, scrollController) {
-            return Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-                border: Border.all(color: const Color(0xFF8DBB6A), width: 1),
-              ),
-              child: Column(
-                children: [
-                  const SizedBox(height: 10),
-                  Container(
-                    width: 44,
-                    height: 5,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[400],
-                      borderRadius: BorderRadius.circular(99),
-                    ),
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => Navigator.pop(context), // ✅ 상단 빈 공간 터치 시 닫기 기능 복구
+          child: DraggableScrollableSheet(
+            initialChildSize: 0.62,
+            minChildSize: 0.35,
+            maxChildSize: 0.88,
+            builder: (context, scrollController) {
+              return GestureDetector(
+                onTap: () {}, // 시트 내부 터치 시 닫히는 것 방지
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                    border: Border.all(color: const Color(0xFF8DBB6A), width: 1),
                   ),
-                  Expanded(
-                    child: ListView(
-                      controller: scrollController,
-                      padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
-                      children: [
-                        Text(
-                          school.name,
-                          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                  child: Column(
+                    children: [
+                      const SizedBox(height: 10),
+                      Container(
+                        width: 44,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: Colors.grey[400],
+                          borderRadius: BorderRadius.circular(99),
                         ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '$distanceText · ${_guessRegionFromAddress(school.address)}',
-                          style: const TextStyle(fontSize: 14, color: Colors.black54),
-                        ),
-                        const SizedBox(height: 14),
-
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      ),
+                      Expanded(
+                        child: ListView(
+                          controller: scrollController,
+                          padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
                           children: [
                             Text(
-                              '리뷰 ${school.reviewCount}개',
+                              school.name,
+                              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '$distanceText · ${_guessRegionFromAddress(school.address)}',
                               style: const TextStyle(fontSize: 14, color: Colors.black54),
                             ),
-                            ElevatedButton(
-                              onPressed: () async {
-                                Navigator.pop(context);
-                                await _showWriteReviewDialog(school: school);
+                            const SizedBox(height: 14),
 
-                                // 작성 후 최신 리뷰 다시 불러와서 바텀시트 재오픈
-                                try {
-                                  final newReviews = await _fetchReviewsForSchool(school.id);
-                                  if (!mounted) return;
-                                  _showSchoolBottomSheet(school: school, reviews: newReviews);
-                                } catch (_) {}
-                              },
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF5E9B4B),
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-                                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                                elevation: 0,
-                              ),
-                              child: const Text('리뷰 작성하기', style: TextStyle(fontWeight: FontWeight.bold)),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  '리뷰 ${school.reviewCount}개',
+                                  style: const TextStyle(fontSize: 14, color: Colors.black54),
+                                ),
+                                ElevatedButton(
+                                  onPressed: () async {
+                                    Navigator.pop(context); // 현재 열려있는 바텀시트 닫기
+
+                                    // ✅ 현재 학교 리뷰에서 “내 리뷰” 탐색
+                                    ReviewItem? myReview;
+                                    final myNick = _myNickname;
+                                    if (myNick != null && myNick.isNotEmpty) {
+                                      for (final r in reviews) {
+                                        if (r.authorNickname == myNick) {
+                                          myReview = r;
+                                          break;
+                                        }
+                                      }
+                                    }
+
+                                    bool? ok;
+
+                                    if (myReview != null) {
+                                      // ✅ 이미 작성했으면 경고 + 수정하기 유도
+                                      final goEdit = await _showAlreadyReviewedDialog();
+                                      if (goEdit == true) {
+                                        ok = await _showEditReviewDialog(school: school, review: myReview);
+                                      } else {
+                                        ok = false;
+                                      }
+                                    } else {
+                                      // ✅ 처음이면 작성 다이얼로그
+                                      ok = await _showWriteReviewDialog(school: school);
+                                    }
+
+                                    if (ok == true) {
+                                      _showSnack('리뷰 제출이 완료되었습니다');
+                                      await _loadSchoolsAndPlaceMarkers();
+
+                                      final updatedSchool = _schools.firstWhere(
+                                        (s) => s.id == school.id,
+                                        orElse: () => school,
+                                      );
+                                      final newReviews = await _fetchReviewsForSchool(school.id);
+                                      
+                                      if (!mounted) return;
+                                      _showSchoolBottomSheet(school: updatedSchool, reviews: newReviews);
+                                    }
+                                  },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF5E9B4B),
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                                    elevation: 0,
+                                  ),
+                                  child: const Text('리뷰 작성하기', style: TextStyle(fontWeight: FontWeight.bold)),
+                                ),
+                              ],
                             ),
+
+                            const SizedBox(height: 14),
+                            const Divider(height: 1),
+
+                            const SizedBox(height: 14),
+                            for (final r in reviews) ...[
+                              _buildReviewCard(school: school, r: r),
+                              const Divider(height: 20),
+                            ],
                           ],
                         ),
-
-                        const SizedBox(height: 14),
-                        const Divider(height: 1),
-
-                        const SizedBox(height: 14),
-                        for (final r in reviews) ...[
-                          _buildReviewCard(r),
-                          const Divider(height: 20),
-                        ],
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-            );
-          },
+                ),
+              );
+            },
+          ),
         );
       },
-    );
+    ).whenComplete(() {
+      _isSchoolSheetOpen = false;
+    });
   }
 
   String _distanceTextToSchool(School s) {
@@ -691,8 +1046,14 @@ class _TestCenterPageState extends State<TestCenterPage> {
     return '';
   }
 
-  Widget _buildReviewCard(ReviewItem r) {
+  Widget _buildReviewCard({
+    required School school,
+    required ReviewItem r,
+  }) {
     final firstImage = r.imageUrls.isNotEmpty ? r.imageUrls.first : null;
+    final isMine = (_myNickname != null &&
+        _myNickname!.isNotEmpty &&
+        r.authorNickname == _myNickname);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -715,6 +1076,39 @@ class _TestCenterPageState extends State<TestCenterPage> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
+
+            // ✅ 내 리뷰면 수정 버튼
+            if (isMine)
+              TextButton.icon(
+                onPressed: () async {
+                  // ✅ 1) 바텀시트 먼저 닫기 (write-review 흐름과 동일하게)
+                  _closeSchoolSheetIfOpen();
+
+                  // ✅ 2) 한 프레임 뒤에 다이얼로그 열기 (pop 애니메이션 정리 시간)
+                  await Future.delayed(const Duration(milliseconds: 50));
+
+                  final ok = await _showEditReviewDialog(school: school, review: r);
+
+                  if (ok == true) {
+                    _showSnack('리뷰가 수정되었습니다');
+                    await _loadSchoolsAndPlaceMarkers();
+
+                    // ✅ school 정보(리뷰카운트 등)도 최신으로 가져오기
+                    final updatedSchool = _schools.firstWhere(
+                          (s) => s.id == school.id,
+                      orElse: () => school,
+                    );
+
+                    final newReviews = await _fetchReviewsForSchool(school.id);
+                    if (!mounted) return;
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      _showSchoolBottomSheet(school: updatedSchool, reviews: newReviews);
+                    });
+                  }
+                },
+                icon: const Icon(Icons.edit, size: 18),
+                label: const Text('수정'),
+              ),
           ],
         ),
         const SizedBox(height: 10),
@@ -729,14 +1123,14 @@ class _TestCenterPageState extends State<TestCenterPage> {
               textColor: r.recommended ? Colors.blue : Colors.red,
             ),
             _pill(
-              r.facilityGood ? '시험장 시설이 좋아요' : '시험장 시설이 별로예요',
+              r.facilityGood ? '시설이 좋아요' : '시설이 별로예요',
               borderColor: r.facilityGood ? Colors.blue : Colors.red,
               textColor: r.facilityGood ? Colors.blue : Colors.red,
             ),
             _pill(
               r.quiet ? '조용해요' : '시끄러워요',
-              borderColor: Colors.blue,
-              textColor: Colors.blue,
+              borderColor: r.quiet ? Colors.blue : Colors.red ,
+              textColor: r.quiet ? Colors.blue : Colors.red,
             ),
             _pill(
               r.accessible ? '자가용도 괜찮아요' : '대중교통을 추천해요',
@@ -810,8 +1204,7 @@ class _TestCenterPageState extends State<TestCenterPage> {
     );
   }
 
-  /// ====== (6) 리뷰 작성 모달 + image_picker + 실제 업로드 ======
-  Future<void> _showWriteReviewDialog({required School school}) async {
+  Future<bool?> _showWriteReviewDialog({required School school}) async {
     bool recommended = true;
     bool facilityGood = true;
     bool quiet = true;
@@ -820,6 +1213,8 @@ class _TestCenterPageState extends State<TestCenterPage> {
     File? pickedImage;
     String contentText = '';
 
+    bool submitting = false;
+
     Future<void> pickImage(StateSetter setStateDialog) async {
       final picker = ImagePicker();
       final xfile = await picker.pickImage(source: ImageSource.gallery);
@@ -827,12 +1222,12 @@ class _TestCenterPageState extends State<TestCenterPage> {
       setStateDialog(() => pickedImage = File(xfile.path));
     }
 
-    await showDialog(
+    return await showDialog<bool>(
       context: context,
       barrierDismissible: true,
-      builder: (context) {
+      builder: (dialogContext) {
         return StatefulBuilder(
-          builder: (context, setStateDialog) {
+          builder: (dialogContext, setStateDialog) {
             return Dialog(
               insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
               backgroundColor: Colors.transparent,
@@ -857,18 +1252,19 @@ class _TestCenterPageState extends State<TestCenterPage> {
                           _toggleButton(
                             label: '추천',
                             selected: recommended == true,
-                            onTap: () => setStateDialog(() => recommended = true),
+                            onTap: submitting ? () {} : () => setStateDialog(() => recommended = true),
                           ),
                           const SizedBox(width: 10),
                           _toggleButton(
                             label: '비추천',
                             selected: recommended == false,
-                            onTap: () => setStateDialog(() => recommended = false),
+                            onTap: submitting ? () {} : () => setStateDialog(() => recommended = false),
                           ),
                         ],
                       ),
 
                       const SizedBox(height: 16),
+
                       const Text('시험장 시설은 어땠나요?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
                       Row(
@@ -876,18 +1272,19 @@ class _TestCenterPageState extends State<TestCenterPage> {
                           _toggleButton(
                             label: '좋아요',
                             selected: facilityGood == true,
-                            onTap: () => setStateDialog(() => facilityGood = true),
+                            onTap: submitting ? () {} : () => setStateDialog(() => facilityGood = true),
                           ),
                           const SizedBox(width: 10),
                           _toggleButton(
                             label: '별로예요',
                             selected: facilityGood == false,
-                            onTap: () => setStateDialog(() => facilityGood = false),
+                            onTap: submitting ? () {} : () => setStateDialog(() => facilityGood = false),
                           ),
                         ],
                       ),
 
                       const SizedBox(height: 16),
+
                       const Text('전체적으로 조용한 환경인가요?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
                       Row(
@@ -895,18 +1292,19 @@ class _TestCenterPageState extends State<TestCenterPage> {
                           _toggleButton(
                             label: '조용해요',
                             selected: quiet == true,
-                            onTap: () => setStateDialog(() => quiet = true),
+                            onTap: submitting ? () {} : () => setStateDialog(() => quiet = true),
                           ),
                           const SizedBox(width: 10),
                           _toggleButton(
                             label: '시끄러워요',
                             selected: quiet == false,
-                            onTap: () => setStateDialog(() => quiet = false),
+                            onTap: submitting ? () {} : () => setStateDialog(() => quiet = false),
                           ),
                         ],
                       ),
 
                       const SizedBox(height: 16),
+
                       const Text('교통은 어떤가요?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
                       Column(
@@ -914,24 +1312,25 @@ class _TestCenterPageState extends State<TestCenterPage> {
                           _toggleButton(
                             label: '자가용도 괜찮아요',
                             selected: accessible == true,
-                            onTap: () => setStateDialog(() => accessible = true),
+                            onTap: submitting ? () {} : () => setStateDialog(() => accessible = true),
                           ),
-                          const SizedBox(height: 10),
+                          const SizedBox(width: 10),
                           _toggleButton(
                             label: '대중교통을 추천해요',
                             selected: accessible == false,
-                            onTap: () => setStateDialog(() => accessible = false),
+                            onTap: submitting ? () {} : () => setStateDialog(() => accessible = false),
                           ),
                         ],
                       ),
 
                       const SizedBox(height: 18),
+
                       const Text('사진 업로드', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
                       Row(
                         children: [
                           ElevatedButton(
-                            onPressed: () => pickImage(setStateDialog),
+                            onPressed: submitting ? null : () => pickImage(setStateDialog),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.grey[200],
                               foregroundColor: Colors.black87,
@@ -947,59 +1346,101 @@ class _TestCenterPageState extends State<TestCenterPage> {
                               style: const TextStyle(color: Colors.black54),
                               overflow: TextOverflow.ellipsis,
                             ),
-                          )
+                          ),
+                          if (pickedImage != null) ...[
+                            const SizedBox(width: 8),
+                            IconButton(
+                              tooltip: '선택 취소',
+                              onPressed: submitting ? null : () => setStateDialog(() => pickedImage = null),
+                              icon: const Icon(Icons.close, size: 18),
+                            ),
+                          ],
                         ],
                       ),
 
                       const SizedBox(height: 18),
+
                       const Text('리뷰 쓰기', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
                       TextField(
                         minLines: 4,
                         maxLines: 6,
                         onChanged: (v) => contentText = v,
+                        enabled: !submitting,
                         decoration: InputDecoration(
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                         ),
                       ),
 
                       const SizedBox(height: 18),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: ElevatedButton(
-                          onPressed: () async {
-                            final text = contentText.trim();
-                            if (text.isEmpty) {
-                              _showSnack('리뷰 내용을 입력해주세요!');
-                              return;
-                            }
 
-                            try {
-                              await _submitReview(
-                                schoolId: school.id,
-                                recommended: recommended,
-                                facilityGood: facilityGood,
-                                quiet: quiet,
-                                accessible: accessible,
-                                content: text,
-                                imageFile: pickedImage,
-                              );
-                              if (!mounted) return;
-                              Navigator.pop(context);
-                              _showSnack('리뷰가 제출되었습니다!');
-                            } catch (e) {
-                              _showSnack('제출 실패: $e');
-                            }
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF5E9B4B),
-                            foregroundColor: Colors.white,
-                            elevation: 0,
-                            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: submitting
+                                  ? null
+                                  : () {
+                                Navigator.pop(dialogContext, false); 
+                              },
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.black87,
+                                side: const BorderSide(color: Colors.black26),
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                              ),
+                              child: const Text('취소', style: TextStyle(fontWeight: FontWeight.bold)),
+                            ),
                           ),
-                          child: const Text('제출하기', style: TextStyle(fontWeight: FontWeight.bold)),
-                        ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: submitting
+                                  ? null
+                                  : () async {
+                                final text = contentText.trim();
+                                if (text.isEmpty) {
+                                  _showSnack('리뷰 내용을 입력해주세요!');
+                                  return;
+                                }
+
+                                setStateDialog(() => submitting = true);
+
+                                try {
+                                  await _submitReview(
+                                    schoolId: school.id,
+                                    recommended: recommended,
+                                    facilityGood: facilityGood,
+                                    quiet: quiet,
+                                    accessible: accessible,
+                                    content: text,
+                                    imageFile: pickedImage,
+                                  );
+
+                                  if (!mounted) return;
+                                  Navigator.pop(dialogContext, true); 
+                                } catch (e) {
+                                  _showSnack('제출 실패: $e');
+                                  if (mounted) setStateDialog(() => submitting = false);
+                                }
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF5E9B4B),
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                              ),
+                              child: submitting
+                                  ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                                  : const Text('제출하기', style: TextStyle(fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -1011,6 +1452,7 @@ class _TestCenterPageState extends State<TestCenterPage> {
       },
     );
   }
+
 
   Widget _toggleButton({
     required String label,
