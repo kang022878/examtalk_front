@@ -105,15 +105,20 @@ class TestCenterPage extends StatefulWidget {
   const TestCenterPage({super.key, required this.scoreNotifier,});
 
   @override
-  State<TestCenterPage> createState() => _TestCenterPageState();
+  TestCenterPageState createState() => TestCenterPageState();
 }
 
-class _TestCenterPageState extends State<TestCenterPage> {
+class TestCenterPageState extends State<TestCenterPage> {
   final Map<int, bool> _likedByMe = {};      // reviewId -> liked
   final Map<int, int> _likeCountById = {};   // reviewId -> likeCount
 
   late final ApiClient _apiClient;
   late final Api _api;
+
+  /// 외부에서 호출 가능: 탭 진입 시 AI 추천 새로고침
+  void refreshAiRecommendations() {
+    _loadAiRecommendedSchools();
+  }
 
   NaverMapController? _mapController;
 

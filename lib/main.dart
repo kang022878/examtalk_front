@@ -126,7 +126,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 
   final ValueNotifier<int> _scoreNotifier = ValueNotifier<int>(0);
 
-  // ✅ 앱 전체 로그인/프로필 상태 (여기가 “단일 진실”)
+  // ✅ TestCenterPage 상태 접근용 GlobalKey
+  final GlobalKey<TestCenterPageState> _testCenterKey = GlobalKey<TestCenterPageState>();
+
+  // ✅ 앱 전체 로그인/프로필 상태 (여기가 "단일 진실")
   bool _isLoggedIn = false;
   String _email = '';
   String _nickname = '닉네임';
@@ -147,7 +150,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         nickname: _nickname,
         scoreNotifier: _scoreNotifier,
       ),
-      TestCenterPage(scoreNotifier: _scoreNotifier),
+      TestCenterPage(key: _testCenterKey, scoreNotifier: _scoreNotifier),
       //const AiRecommenderPage(),
       MyPage(
         isLoggedIn: _isLoggedIn,
@@ -198,7 +201,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       bottomNavigationBar: BottomNavigationBar(
         type: BottomNavigationBarType.fixed,
         currentIndex: _selectedIndex,
-        onTap: (index) => setState(() => _selectedIndex = index),
+        onTap: (index) {
+          setState(() => _selectedIndex = index);
+          // ✅ 고사장 탭(인덱스 1) 진입 시 AI 추천 새로고침
+          if (index == 1) {
+            _testCenterKey.currentState?.refreshAiRecommendations();
+          }
+        },
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.edit_note), label: '스터디'),
           BottomNavigationBarItem(icon: Icon(Icons.home), label: '고사장'),
