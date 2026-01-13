@@ -476,7 +476,7 @@ class _StudyPageState extends State<StudyPage> with SingleTickerProviderStateMix
                 ),
                 const SizedBox(width: 6),
                 const Padding(
-                  padding: EdgeInsets.only(bottom: 4),
+                  padding: EdgeInsets.only(bottom: 5),
                   child: Text('점',
                       style: TextStyle(
                           fontSize: 14,
@@ -485,19 +485,22 @@ class _StudyPageState extends State<StudyPage> with SingleTickerProviderStateMix
                 ),
                 const Spacer(),
                 // “오늘도 한 발 더” 같은 발표용 문구
-                Container(
-                  padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                Transform.translate(
+                  offset: const Offset(0, -1.5),
+                  child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9.5, vertical: 5),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFCDE1AF).withOpacity(0.55),
-                    borderRadius: BorderRadius.circular(10),
+                  color: const Color(0xFFCDE1AF).withOpacity(0.55),
+                  borderRadius: BorderRadius.circular(10),
                   ),
                   child: const Text(
                     '스터디 참여 & 리뷰 작성으로 점수를 올려봐요!',
                     style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF436B2D)),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF436B2D),
+                      ),
+                    ),
                   ),
                 ),
               ],
