@@ -1490,7 +1490,7 @@ class _TestCenterPageState extends State<TestCenterPage> {
               ],
             ),
             Text(
-              '리뷰 ${s.reviewCount}개 · ⭐ ${s.avgRating.toStringAsFixed(1)}',
+              '리뷰 ${s.reviewCount}개',
               style: const TextStyle(fontSize: 12),
             ),
           ],
