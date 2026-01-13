@@ -124,6 +124,25 @@ class _StudyPageState extends State<StudyPage> with SingleTickerProviderStateMix
     }
   }
 
+  /// [테스트용] 점수 50점 추가
+  Future<void> _addTestScore() async {
+    if (!widget.isLoggedIn) {
+      _showSnack('로그인 후 사용 가능합니다.');
+      return;
+    }
+    try {
+      final res = await _api.addTestScore();
+      final data = res['data'] as Map<String, dynamic>?;
+      final newScore = (data?['score'] as num?)?.toInt();
+      if (newScore != null) {
+        widget.scoreNotifier.value = newScore;
+        _showSnack('+50점! (총 $newScore점)');
+      }
+    } catch (e) {
+      _showSnack('점수 추가 실패: ${_prettyError(e)}');
+    }
+  }
+
   Future<void> _loadCurrentUserId() async {
     if (_currentUserId != null) return;
     try {
@@ -404,9 +423,11 @@ class _StudyPageState extends State<StudyPage> with SingleTickerProviderStateMix
                     ),
                     child: Row(
                       children: [
-
-                        Icon(iconByLevel(),
-                            size: 16, color: const Color(0xFF4E8F2E)),
+                        GestureDetector(
+                          onTap: _addTestScore,
+                          child: Icon(iconByLevel(),
+                              size: 16, color: const Color(0xFF4E8F2E)),
+                        ),
                         const SizedBox(width: 6),
                         Text(
                           '합격 게이지 Lv.$level',
@@ -448,7 +469,7 @@ class _StudyPageState extends State<StudyPage> with SingleTickerProviderStateMix
                 Text(
                   '$score',
                   style: const TextStyle(
-                    fontSize: 26,
+                    fontSize: 24,
                     fontWeight: FontWeight.w900,
                     color: Color(0xFF2F4A1F),
                   ),

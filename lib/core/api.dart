@@ -321,4 +321,10 @@ class Api {
     return res.data as Map<String, dynamic>;
   }
 
+  /// [테스트용] 점수 50점 추가
+  Future<Map<String, dynamic>> addTestScore() async {
+    final res = await _client.dio.post('/api/users/me/score/test');
+    return res.data as Map<String, dynamic>;
+  }
+
 }
