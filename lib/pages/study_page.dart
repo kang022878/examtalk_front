@@ -292,7 +292,7 @@ class _StudyPageState extends State<StudyPage> {
           const SizedBox(height: 15),
           Wrap(
             spacing: 8,
-            children: ['TOEIC', 'TOEFL', 'TEPS', 'OPIc', 'GRE', 'IELTS', 'G-TELP']
+            children: ['TOEIC', 'TOEFL', 'TEPS', 'OPIc']
                 .map((cat) => ChoiceChip(
                       label: Text(cat),
                       selected: _selectedCategory == cat,
@@ -692,7 +692,7 @@ class _StudyPageState extends State<StudyPage> {
         backgroundColor: const Color(0xFFCDE1AF), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)), title: const Center(child: Text('스터디 만들기', style: TextStyle(fontWeight: FontWeight.bold))),
         content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
           _buildDialogTextField('제목', titleController, '스터디 제목'),
-          _buildDialogDropdown('시험 종류', examType, ['TOEIC', 'TOEFL', 'TEPS', 'OPIc', 'GRE', 'IELTS', 'G-TELP'], (val) => setDialogState(() => examType = val!)),
+          _buildDialogDropdown('시험 종류', examType, ['TOEIC', 'TOEFL', 'TEPS', 'OPIc'], (val) => setDialogState(() => examType = val!)),
           _buildDialogDropdown('지역', city, ['서울', '대전', '부산', '인천', '광주', '대구', '울산', '세종', '경기', '강원', '충북', '충남', '전북', '전남', '경북', '경남', '제주'], (val) => setDialogState(() => city = val!)),
           _buildDialogTextField('목표 점수', scoreController, '점수 입력', isNumber: true),
           _buildDialogDropdown('모임 횟수', meetingFrequency, ['주 1회', '주 2회', '주 3회', '주 4회', '주 5회', '주 6회', '매일'], (val) => setDialogState(() => meetingFrequency = val!)),
