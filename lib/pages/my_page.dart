@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -103,6 +104,12 @@ class _MyPageState extends State<MyPage> {
   // (백엔드 프로필 bio를 myGoal로 매핑해서 사용)
   String _bio = '';
 
+  // ✅ 나의 성향(로컬 저장) !! 아직 백앤드랑 연결 안 함 !!
+  String _tendencyQ1 = '';
+  String _tendencyQ2 = '';
+  String _tendencyQ3 = '';
+  String _tendencyQ4 = '';
+
   final Map<DateTime, List<TestSchedule>> _events = {};
   final CalendarFormat _calendarFormat = CalendarFormat.month;
   DateTime _focusedDay = DateTime.now();
@@ -139,6 +146,143 @@ class _MyPageState extends State<MyPage> {
   void dispose() {
     _galleryScrollController.dispose();
     super.dispose();
+  }
+
+  String _tKey(String email, int idx) => 'my_tendency_${email}_q$idx';
+
+  Future<void> _loadTendencies(String email) async {
+    if (email.trim().isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+
+    if (!mounted) return;
+    setState(() {
+      _tendencyQ1 = prefs.getString(_tKey(email, 1)) ?? '';
+      _tendencyQ2 = prefs.getString(_tKey(email, 2)) ?? '';
+      _tendencyQ3 = prefs.getString(_tKey(email, 3)) ?? '';
+      _tendencyQ4 = prefs.getString(_tKey(email, 4)) ?? '';
+    });
+  }
+
+  Future<void> _saveTendencies(String email) async {
+    if (email.trim().isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setString(_tKey(email, 1), _tendencyQ1);
+    await prefs.setString(_tKey(email, 2), _tendencyQ2);
+    await prefs.setString(_tKey(email, 3), _tendencyQ3);
+    await prefs.setString(_tKey(email, 4), _tendencyQ4);
+  }
+
+  // ✅ 서버에 저장할 tendency(JSON string) 만들기
+  String _encodeTendency(String q1, String q2, String q3, String q4) {
+    final map = {
+      'q1': q1.trim(),
+      'q2': q2.trim(),
+      'q3': q3.trim(),
+      'q4': q4.trim(),
+    };
+    return jsonEncode(map); // 서버에는 string 하나로 저장됨
+  }
+
+// ✅ 서버에서 받은 tendency(JSON string) -> 4칸 복원
+  Map<String, String> _decodeTendency(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        return {
+          'q1': decoded['q1']?.toString() ?? '',
+          'q2': decoded['q2']?.toString() ?? '',
+          'q3': decoded['q3']?.toString() ?? '',
+          'q4': decoded['q4']?.toString() ?? '',
+        };
+      }
+    } catch (_) {
+      // 과거 데이터가 "그냥 이어붙인 문자열"일 수도 있으니 fallback
+    }
+    return {'q1': '', 'q2': '', 'q3': '', 'q4': ''};
+  }
+
+  Widget _tendencyField({
+    required TextEditingController controller,
+    required String label,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        TextField(
+          controller: controller,
+          maxLines: 2,
+          decoration: const InputDecoration(
+            hintText: '입력하세요',
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTendencyCard() {
+    String pretty(String s) => s.trim().isEmpty ? '작성해주세요.' : s.trim();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 5),
+          )
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '나의 성향',
+            style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+
+          const Text(
+            '시험 전날과 시험 당일 아침에 보통 어떤 상태인가요?',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(pretty(_tendencyQ1), style: const TextStyle(fontSize: 12, color: Colors.black54)),
+          const SizedBox(height: 12),
+
+          const Text(
+            '시험 볼 때 가장 집중이 잘 깨지는 상황은 언제인가요?',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(pretty(_tendencyQ2), style: const TextStyle(fontSize: 12, color: Colors.black54)),
+          const SizedBox(height: 12),
+
+          const Text(
+            '내 멘탈이 가장 흔들리는 순간은?',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(pretty(_tendencyQ3), style: const TextStyle(fontSize: 12, color: Colors.black54)),
+          const SizedBox(height: 12),
+
+          const Text(
+            '더 적고 싶은 자신의 성향을 작성해주세요.',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(pretty(_tendencyQ4), style: const TextStyle(fontSize: 12, color: Colors.black54)),
+        ],
+      ),
+    );
   }
 
   void _openGalleryViewer({required int initialIndex}) {
@@ -316,6 +460,7 @@ class _MyPageState extends State<MyPage> {
       final email = (data?['email'] ?? '') as String;
       final nickname = (data?['nickname'] ?? '닉네임') as String;
       final bio = (data?['bio'] ?? '') as String;
+      final tendencyRaw = (data?['tendency'] ?? '') as String;
 
       final profileImageUrl = (data?['profileImageUrl'] as String?)?.trim();
 
@@ -332,6 +477,23 @@ class _MyPageState extends State<MyPage> {
             ? profileImageUrl
             : null;
       });
+
+      await _loadTendencies(_email); // 로컬 먼저 로드(오프라인 캐시)
+
+      if (tendencyRaw.trim().isNotEmpty) {
+        final parsed = _decodeTendency(tendencyRaw);
+
+        if (!mounted) return;
+        setState(() {
+          _tendencyQ1 = parsed['q1'] ?? '';
+          _tendencyQ2 = parsed['q2'] ?? '';
+          _tendencyQ3 = parsed['q3'] ?? '';
+          _tendencyQ4 = parsed['q4'] ?? '';
+        });
+
+        // 로컬 캐시도 서버 값으로 덮어써서 동기화
+        await _saveTendencies(_email);
+      }
 
       // 부모에 로그인 상태 반영
       widget.onLogin(_email, _nickname, _myGoal, _profileImage);
@@ -555,6 +717,7 @@ class _MyPageState extends State<MyPage> {
             ),
           ),
           const SizedBox(height: 12),
+          _buildTendencyCard(),
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
@@ -579,6 +742,10 @@ class _MyPageState extends State<MyPage> {
     bool imageChanged = false;
     final nameController = TextEditingController(text: _nickname);
     final goalController = TextEditingController(text: _myGoal == '목표를 적어보세요' ? '' : _myGoal);
+    final t1Controller = TextEditingController(text: _tendencyQ1);
+    final t2Controller = TextEditingController(text: _tendencyQ2);
+    final t3Controller = TextEditingController(text: _tendencyQ3);
+    final t4Controller = TextEditingController(text: _tendencyQ4);
 
     showDialog(
       context: context,
@@ -586,42 +753,90 @@ class _MyPageState extends State<MyPage> {
         builder: (context, setDialogState) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           title: const Text('정보 수정', style: TextStyle(fontWeight: FontWeight.bold)),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                GestureDetector(
-                  onTap: () async {
-                    await _pickImage(setDialogState, context); // 여기 context는 다이얼로그 context
-                  },
-                  child: Stack(
-                    children: [
-                      CircleAvatar(
-                        radius: 35,
-                        backgroundColor: Colors.white,
-                        backgroundImage: _profileImage != null
-                            ? FileImage(_profileImage!)
-                            : (_profileImageUrl != null && _profileImageUrl!.isNotEmpty
-                            ? NetworkImage(_profileImageUrl!)
-                            : null) as ImageProvider?,
-                        child: (_profileImage == null && (_profileImageUrl == null || _profileImageUrl!.isEmpty))
-                            ? const Icon(Icons.face, size: 50, color: Colors.lightGreen)
-                            : null,
-                      ),
-
-                      const Positioned(
-                        right: 0,
-                        bottom: 0,
-                        child: CircleAvatar(radius: 12, backgroundColor: Colors.green, child: Icon(Icons.edit, size: 12, color: Colors.white)),
-                      ),
-                    ],
+          content: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.65,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // (기존) 프로필 이미지
+                  GestureDetector(
+                    onTap: () async {
+                      await _pickImage(setDialogState, context);
+                    },
+                    child: Stack(
+                      children: [
+                        CircleAvatar(
+                          radius: 35,
+                          backgroundColor: Colors.white,
+                          backgroundImage: _profileImage != null
+                              ? FileImage(_profileImage!)
+                              : (_profileImageUrl != null && _profileImageUrl!.isNotEmpty
+                              ? NetworkImage(_profileImageUrl!)
+                              : null) as ImageProvider?,
+                          child: (_profileImage == null &&
+                              (_profileImageUrl == null || _profileImageUrl!.isEmpty))
+                              ? const Icon(Icons.face, size: 50, color: Colors.lightGreen)
+                              : null,
+                        ),
+                        const Positioned(
+                          right: 0,
+                          bottom: 0,
+                          child: CircleAvatar(
+                            radius: 12,
+                            backgroundColor: Colors.green,
+                            child: Icon(Icons.edit, size: 12, color: Colors.white),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(height: 20),
-                TextField(controller: nameController, decoration: const InputDecoration(labelText: '닉네임')),
-                const SizedBox(height: 16),
-                TextField(controller: goalController, decoration: const InputDecoration(labelText: '나의 목표(=소개 bio)')),
-              ],
+
+                  const SizedBox(height: 20),
+                  TextField(controller: nameController, decoration: const InputDecoration(labelText: '닉네임')),
+                  const SizedBox(height: 16),
+                  TextField(controller: goalController, decoration: const InputDecoration(labelText: '나의 목표(=소개 bio)')),
+
+                  // ✅ 성향 섹션(기존 기능 아래에 붙임)
+                  const SizedBox(height: 20),
+                  const Divider(height: 1),
+                  const SizedBox(height: 16),
+
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '나의 성향 작성',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  _tendencyField(
+                    controller: t1Controller,
+                    label: '시험 전날과 시험 당일 아침에 보통 어떤 상태인가요?',
+                  ),
+                  const SizedBox(height: 12),
+
+                  _tendencyField(
+                    controller: t2Controller,
+                    label: '시험 볼 때 가장 집중이 잘 깨지는 상황은 언제인가요?',
+                  ),
+                  const SizedBox(height: 12),
+
+                  _tendencyField(
+                    controller: t3Controller,
+                    label: '내 멘탈이 가장 흔들리는 순간은?',
+                  ),
+                  const SizedBox(height: 12),
+
+                  _tendencyField(
+                    controller: t4Controller,
+                    label: '더 적고 싶은 자신의 성향을 작성해주세요.',
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [
@@ -633,9 +848,19 @@ class _MyPageState extends State<MyPage> {
                     onPressed: () async {
                       final newNickname = nameController.text.trim().isEmpty ? '닉네임' : nameController.text.trim();
                       final newBio = goalController.text.trim();
+                      final tendencyToSave = _encodeTendency(
+                        t1Controller.text,
+                        t2Controller.text,
+                        t3Controller.text,
+                        t4Controller.text,
+                      );
 
                       try {
-                        await _api.updateMyProfile(nickname: newNickname, bio: newBio);
+                        await _api.updateMyProfile(
+                          nickname: newNickname,
+                          bio: newBio,
+                          tendency: tendencyToSave,
+                        );
 
                         if (!mounted) return;
                         setState(() {
@@ -643,6 +868,13 @@ class _MyPageState extends State<MyPage> {
                           _bio = newBio;
                           _myGoal = newBio.isEmpty ? '목표를 적어보세요' : newBio;
                         });
+
+                        // ✅ 성향 반영 + 로컬 저장
+                        _tendencyQ1 = t1Controller.text.trim();
+                        _tendencyQ2 = t2Controller.text.trim();
+                        _tendencyQ3 = t3Controller.text.trim();
+                        _tendencyQ4 = t4Controller.text.trim();
+                        await _saveTendencies(_email);
 
                         widget.onProfileUpdated(_nickname, _myGoal, _profileImage);
 
@@ -711,6 +943,8 @@ class _MyPageState extends State<MyPage> {
                   // (로컬 캐시 유지)
                   _userDataStorage[email] = {'nickname': _nickname, 'goal': _myGoal, 'image': _profileImage};
                 });
+
+                await _loadTendencies(_email);
 
                 // ✅ 부모에게 로그인 상태 전달
                 widget.onLogin(_email, _nickname, _myGoal, _profileImage);

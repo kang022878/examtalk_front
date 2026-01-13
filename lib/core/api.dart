@@ -80,15 +80,20 @@ class Api {
     return (res.data as Map<String, dynamic>);
   }
 
-  Future<Map<String, dynamic>> updateMyProfile({
+  Future<dynamic> updateMyProfile({
     required String nickname,
     required String bio,
+    String? tendency,
   }) async {
     final res = await _client.dio.put(
       '/api/users/me',
-      data: {'nickname': nickname, 'bio': bio},
+      data: {
+        'nickname': nickname,
+        'bio': bio,
+        'tendency': tendency ?? '',
+      },
     );
-    return (res.data as Map<String, dynamic>);
+    return res.data;
   }
 
   // ========== Study API ==========
