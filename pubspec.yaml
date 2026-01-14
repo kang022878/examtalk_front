@@ -34,6 +34,7 @@ flutter:
   assets:
     - .env
     - assets/examtalk_logo.png
+    - assets/runner.png
 
 flutter_icons:
   android: true

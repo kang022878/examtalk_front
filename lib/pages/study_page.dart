@@ -206,33 +206,38 @@ class _StudyPageState extends State<StudyPage> with SingleTickerProviderStateMix
 
   Widget _progressWithRunnerAndFlag({required double progress}) {
     const barH = 10.0;
-    const runnerSize = 28.0;
+
+    // ✅ 여기만 키우면 러너가 전체적으로 커짐
+    const runnerW = 38.0;   // 기존 28.0 → 36~44 추천
+    const runnerH = 38.0;
+
     const flagSize = 25.0;
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxW = constraints.maxWidth;
+
         return TweenAnimationBuilder<double>(
           tween: Tween(begin: 0.0, end: progress),
           duration: const Duration(milliseconds: 700),
           curve: Curves.easeOutCubic,
           builder: (context, value, _) {
-            // runner x: 채워진 바 끝을 따라가게
-            final runnerX = (maxW - runnerSize) * value;
+            // ✅ 끝에서 안 잘리게 clamp
+            final runnerX = ((maxW - runnerW) * value).clamp(0.0, maxW - runnerW);
 
-            // runner 살짝 통통 튀는 느낌(shineCtrl 재사용)
-            final bob = (0.5 - ( (_shineCtrl.value - 0.5).abs() )) * 6.0; // 0~3 정도
+            // bob 효과도 러너 크기에 비례해서 조금 더 자연스럽게
+            final bob = (0.5 - ((_shineCtrl.value - 0.5).abs())) * 7.0;
 
             return SizedBox(
-              height: 34,
+              height: 46, // ✅ 러너가 커지면 Stack 높이도 같이 올려야 덜 답답함 (기존 34)
               child: Stack(
                 clipBehavior: Clip.none,
                 children: [
-                  // ✅ 바(회색) + 채워진 바(초록)
+                  // 바
                   Positioned(
                     left: 0,
                     right: 0,
-                    top: 16,
+                    top: 22, // ✅ 높이 키운 만큼 살짝 내려줌(기존 16)
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(999),
                       child: Stack(
@@ -247,32 +252,30 @@ class _StudyPageState extends State<StudyPage> with SingleTickerProviderStateMix
                     ),
                   ),
 
-                  // ✅ 깃발: 회색 바 오른쪽 끝 고정
+                  // 깃발
                   Positioned(
                     right: -2,
-                    top: 6,
-                    child: const Text(
-                      '🏁',
-                      style: TextStyle(
-                        fontSize: 22, // ✅ 더 크게 하고 싶으면 24~28 추천
-                        height: 1.0,
-                      ),
-                    ),
+                    top: 12, // ✅ 러너 커지면 같이 내려주는 게 보통 예쁨
+                    child: const Text('🏁', style: TextStyle(fontSize: 22, height: 1.0)),
+                    // 이미지면:
+                    // child: SizedBox(width: flagSize, height: flagSize,
+                    //   child: Image.asset('assets/flag.png', fit: BoxFit.contain),
+                    // ),
                   ),
 
-                  // ✅ 달리는 사람: 채워지는 바 끝에 붙어서 이동
+                  // ✅ 러너(이미지)
                   Positioned(
                     left: runnerX,
                     top: 0 - bob,
-                    child: const Text(
-                      '🏃🏻‍♂️‍➡️',
-                      style: TextStyle(
-                        fontSize: 28, // ✅ 여기 숫자 키우면 더 커짐 (예: 32, 36)
-                        height: 1.0,
+                    child: SizedBox(
+                      width: runnerW,
+                      height: runnerH,
+                      child: Image.asset(
+                        'assets/runner.png',
+                        fit: BoxFit.contain,
                       ),
                     ),
                   ),
-
                 ],
               ),
             );
