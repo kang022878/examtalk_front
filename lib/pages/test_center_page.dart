@@ -115,6 +115,8 @@ class TestCenterPageState extends State<TestCenterPage> {
   late final ApiClient _apiClient;
   late final Api _api;
 
+  bool _isLoggedIn = false;
+
   /// 외부에서 호출 가능: 탭 진입 시 AI 추천 새로고침
   void refreshAiRecommendations() {
     _loadAiRecommendedSchools();
@@ -151,6 +153,8 @@ class TestCenterPageState extends State<TestCenterPage> {
   bool _isLoadingAiSchools = false;
 
   Future<void> _loadAiRecommendedSchools() async {
+    if (!_isLoggedIn) return; // ✅ 로그아웃이면 호출 안 함
+
     setState(() => _isLoadingAiSchools = true);
     try {
       final res = await _apiClient.dio.get(
@@ -158,16 +162,12 @@ class TestCenterPageState extends State<TestCenterPage> {
         queryParameters: {'topK': 2},
       );
 
-      debugPrint('추천 응답 raw: ${res.data}');
-
       final decoded = res.data as Map<String, dynamic>;
       final data = decoded['data'] as List<dynamic>? ?? [];
 
       final list = data
           .map((e) => School.fromJson(e as Map<String, dynamic>))
           .toList();
-
-      debugPrint('추천 파싱 결과 length=${list.length}');
 
       if (!mounted) return;
       setState(() => _aiRecommendedSchools = list);
@@ -222,9 +222,11 @@ class TestCenterPageState extends State<TestCenterPage> {
     _api = Api(_apiClient);
 
     _loadMyPositionSilently();
-    _loadMyNicknameSilently();
-
-    _loadAiRecommendedSchools();
+    _loadMyNicknameSilently().then((_) {
+      if (mounted && _isLoggedIn) {
+        _loadAiRecommendedSchools();
+      }
+    });
 
     _searchController.addListener(_onSearchTextControllerChanged);
 
@@ -274,12 +276,21 @@ class TestCenterPageState extends State<TestCenterPage> {
       }
 
       if (!mounted) return;
-      setState(() => _myNickname = nickname);
+      setState(() {
+        _myNickname = nickname;
+        _isLoggedIn = true;
+      });
     } catch (_) {
-      // 로그인 안 했거나 /me 엔드포인트 없으면 null로 둠
+      // ✅ 로그아웃/토큰 만료 등: 로그인 아님으로 처리 + 추천 상태 초기화
+      if (!mounted) return;
+      setState(() {
+        _myNickname = null;
+        _isLoggedIn = false;
+        _aiRecommendedSchools = [];     // ✅ 이전 추천 잔상 제거
+        _isLoadingAiSchools = false;
+      });
     }
   }
-
 
   @override
   void dispose() {
@@ -1021,8 +1032,8 @@ class TestCenterPageState extends State<TestCenterPage> {
           ),
         ),
 
-        // ✅ 검색어 없을 때만 AI 추천 고사장 표시
-        if (_searchController.text.isEmpty)
+        // ✅ 검색어 없고 + 로그인 상태일 때만 AI 추천 고사장 표시
+        if (_searchController.text.isEmpty && _isLoggedIn)
           _buildAiSchoolRecommendationSection(),
 
         // ✅ 검색 도우미(자동완성) 목록
@@ -1363,6 +1374,7 @@ class TestCenterPageState extends State<TestCenterPage> {
   }
 
   Widget _buildAiSchoolRecommendationSection() {
+    if (!_isLoggedIn) return const SizedBox.shrink(); // ✅ 최종 방어
     // 로딩 중
     if (_isLoadingAiSchools) {
       return Container(
