@@ -120,6 +120,14 @@ class TestCenterPageState extends State<TestCenterPage> {
 
   bool _isLoggedIn = false;
 
+  /// ====== API: 학교 상세 ======
+  Future<School> _fetchSchoolDetail(int schoolId) async {
+    final res = await _apiClient.dio.get('/api/schools/$schoolId');
+    final decoded = res.data as Map<String, dynamic>;
+    final data = decoded['data'] as Map<String, dynamic>;
+    return School.fromJson(data);
+  }
+
   Future<void> _initAuthAndLoad() async {
     final token = await TokenStorage().readAccessToken();
     // ⚠️ 너 TokenStorage 함수명이 다르면 그 이름으로 바꿔줘야 함
@@ -925,11 +933,18 @@ class TestCenterPageState extends State<TestCenterPage> {
 
   Future<void> _onSchoolMarkerTapped(School school) async {
     try {
-      final reviews = await _fetchReviewsForSchool(school.id);
+      final results = await Future.wait([
+        _fetchSchoolDetail(school.id),       // ✅ 최신 evaluation 포함
+        _fetchReviewsForSchool(school.id),
+      ]);
+
+      final updatedSchool = results[0] as School;
+      final reviews = results[1] as List<ReviewItem>;
+
       if (!mounted) return;
-      _showSchoolBottomSheet(school: school, reviews: reviews);
+      _showSchoolBottomSheet(school: updatedSchool, reviews: reviews);
     } catch (e) {
-      _showSnack('리뷰 불러오기 실패: $e');
+      _showSnack('정보 불러오기 실패: $e');
     }
   }
 
@@ -1345,10 +1360,7 @@ class TestCenterPageState extends State<TestCenterPage> {
                                           _showSnack('리뷰 제출이 완료되었습니다');
                                           await _loadSchoolsAndPlaceMarkers();
 
-                                          final updatedSchool = _schools.firstWhere(
-                                                (s) => s.id == school.id,
-                                            orElse: () => school,
-                                          );
+                                          final updatedSchool = await _fetchSchoolDetail(school.id);
                                           final newReviews = await _fetchReviewsForSchool(school.id);
 
                                           if (!mounted) return;
@@ -1622,11 +1634,7 @@ class TestCenterPageState extends State<TestCenterPage> {
                     _showSnack('리뷰가 수정되었습니다');
                     await _loadSchoolsAndPlaceMarkers();
 
-                    final updatedSchool = _schools.firstWhere(
-                          (s) => s.id == school.id,
-                      orElse: () => school,
-                    );
-
+                    final updatedSchool = await _fetchSchoolDetail(school.id);
                     final newReviews = await _fetchReviewsForSchool(school.id);
                     if (!mounted) return;
                     WidgetsBinding.instance.addPostFrameCallback((_) {
