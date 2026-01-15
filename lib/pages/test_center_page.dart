@@ -13,6 +13,21 @@ import 'package:dio/dio.dart';
 import 'package:image_picker/image_picker.dart';
 
 /// ====== Models ======
+class ReviewImage {
+  final int id;
+  final String imageUrl;
+
+  const ReviewImage({required this.id, required this.imageUrl});
+
+  factory ReviewImage.fromJson(Map<String, dynamic> json) {
+    return ReviewImage(
+      id: (json['id'] as num).toInt(),
+      imageUrl: (json['imageUrl'] ?? '') as String,
+    );
+  }
+}
+
+
 class School {
   final int id;
   final String name;
@@ -58,7 +73,7 @@ class ReviewItem {
   final int rating;
   final String content;
   final int likeCount;
-  final List<String> imageUrls;
+  final List<ReviewImage> images;
   final bool liked;
 
   const ReviewItem({
@@ -71,18 +86,16 @@ class ReviewItem {
     required this.rating,
     required this.content,
     required this.likeCount,
-    required this.imageUrls,
+    required this.images,
     required this.liked,
   });
 
   factory ReviewItem.fromJson(Map<String, dynamic> json) {
-    final images = (json['images'] as List<dynamic>?) ?? const [];
-    final urls = <String>[];
-    for (final e in images) {
-      final m = e as Map<String, dynamic>;
-      final u = m['imageUrl'] as String?;
-      if (u != null && u.isNotEmpty) urls.add(u);
-    }
+    final raw = (json['images'] as List<dynamic>?) ?? const [];
+    final images = raw
+        .map((e) => ReviewImage.fromJson(e as Map<String, dynamic>))
+        .where((x) => x.imageUrl.isNotEmpty)
+        .toList();
 
     return ReviewItem(
       id: (json['id'] as num?)?.toInt() ?? 0,
@@ -94,9 +107,8 @@ class ReviewItem {
       rating: (json['rating'] as num?)?.toInt() ?? 0,
       content: (json['content'] ?? '') as String,
       likeCount: (json['likeCount'] as num?)?.toInt() ?? 0,
-      imageUrls: urls,
+      images: images,
       liked: (json['liked'] ?? false) as bool,
-
     );
   }
 }
@@ -552,6 +564,60 @@ class TestCenterPageState extends State<TestCenterPage> {
     );
   }
 
+  Future<void> _deleteReviewImageById(int imageId) async {
+    await _apiClient.dio.delete('/api/reviews/images/$imageId');
+  }
+
+  Future<void> _deleteReview(int reviewId) async {
+    await _apiClient.dio.delete('/api/reviews/$reviewId');
+  }
+
+  Future<void> _replaceReviewImages({
+    required ReviewItem review,
+    required List<File> newFiles,
+  }) async {
+    // 1) 기존 이미지 삭제 (id로)
+    for (final img in review.images) {
+      try {
+        await _deleteReviewImageById(img.id);
+      } catch (_) {
+        // 한 장 삭제 실패해도 전체 흐름 깨지지 않게(원하면 에러 처리 강화 가능)
+      }
+    }
+
+    // 2) 새 이미지 업로드
+    if (newFiles.isNotEmpty) {
+      await _uploadReviewImages(reviewId: review.id, imageFiles: newFiles);
+    }
+  }
+
+  Future<bool?> _showDeleteReviewDialog() async {
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('리뷰 삭제'),
+          content: const Text('정말 이 리뷰를 삭제할까요?\n삭제 후에는 복구할 수 없습니다.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('취소'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('삭제'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<bool?> _showAlreadyReviewedDialog() async {
     return showDialog<bool>(
       context: context,
@@ -589,16 +655,35 @@ class TestCenterPageState extends State<TestCenterPage> {
     bool accessible = review.accessible;
     String? contentError;
 
-    File? pickedImage;
-    String contentText = review.content;
+    // ✅ 1) 기존 이미지
+    final existingImages = List<ReviewImage>.from(review.images);
 
+    // ✅ 2) 삭제 체크된 기존 이미지 id
+    final Set<int> deleteImageIds = {};
+
+    // ✅ 3) 새로 추가된 이미지 파일들
+    List<File> newImages = [];
+
+    String contentText = review.content;
     bool submitting = false;
 
-    Future<void> pickImage(StateSetter setStateDialog) async {
+    Future<void> pickMoreImages(StateSetter setStateDialog) async {
       final picker = ImagePicker();
-      final xfile = await picker.pickImage(source: ImageSource.gallery);
-      if (xfile == null) return;
-      setStateDialog(() => pickedImage = File(xfile.path));
+      final xfiles = await picker.pickMultiImage();
+      if (xfiles.isEmpty) return;
+
+      // ✅ 최대 5장 제한(기존 유지 개수 + 새 이미지 합쳐서)
+      final keptExistingCount =
+          existingImages.where((img) => !deleteImageIds.contains(img.id)).length;
+      final remain = (5 - keptExistingCount - newImages.length).clamp(0, 5);
+
+      if (remain == 0) return;
+
+      final add = xfiles.map((x) => File(x.path)).take(remain).toList();
+
+      setStateDialog(() {
+        newImages = [...newImages, ...add];
+      });
     }
 
     return await showDialog<bool>(
@@ -704,38 +789,144 @@ class TestCenterPageState extends State<TestCenterPage> {
 
                       const SizedBox(height: 18),
 
-                      const Text('사진 업로드(선택)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const Text('사진', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          ElevatedButton(
-                            onPressed: submitting ? null : () => pickImage(setStateDialog),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.grey[200],
-                              foregroundColor: Colors.black87,
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            ),
-                            child: const Text('파일 선택'),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              pickedImage == null ? '선택한 파일이 없습니다' : pickedImage!.path.split('/').last,
-                              style: const TextStyle(color: Colors.black54),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          if (pickedImage != null) ...[
-                            const SizedBox(width: 8),
-                            IconButton(
-                              tooltip: '선택 취소',
-                              onPressed: submitting ? null : () => setStateDialog(() => pickedImage = null),
-                              icon: const Icon(Icons.close, size: 18),
-                            ),
-                          ],
-                        ],
+                      SizedBox(
+                        height: 92,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount:
+                          // ✅ 유지되는 기존 이미지 + 새 이미지 + 마지막 +버튼
+                          existingImages.where((img) => !deleteImageIds.contains(img.id)).length
+                              + newImages.length
+                              + 1,
+                          separatorBuilder: (_, __) => const SizedBox(width: 8),
+                          itemBuilder: (context, index) {
+                            final keptExisting =
+                            existingImages.where((img) => !deleteImageIds.contains(img.id)).toList();
+
+                            final totalExisting = keptExisting.length;
+                            final totalNew = newImages.length;
+                            final plusIndex = totalExisting + totalNew;
+
+                            // ✅ 마지막: + 추가 버튼
+                            if (index == plusIndex) {
+                              final keptExistingCount = totalExisting;
+                              final remain = (5 - keptExistingCount - totalNew).clamp(0, 5);
+
+                              return InkWell(
+                                onTap: submitting || remain == 0
+                                    ? null
+                                    : () => pickMoreImages(setStateDialog),
+                                child: Container(
+                                  width: 92,
+                                  height: 92,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(color: Colors.black12),
+                                    color: Colors.grey[100],
+                                  ),
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Icon(Icons.add, size: 26, color: Colors.black54),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        remain == 0 ? '최대 5장' : '추가',
+                                        style: const TextStyle(fontSize: 12, color: Colors.black54),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }
+
+                            // ✅ 1) 기존 이미지 카드
+                            if (index < totalExisting) {
+                              final img = keptExisting[index];
+                              return Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.network(
+                                      img.imageUrl,
+                                      width: 92,
+                                      height: 92,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Container(
+                                        width: 92,
+                                        height: 92,
+                                        color: Colors.grey[200],
+                                        alignment: Alignment.center,
+                                        child: const Icon(Icons.broken_image_outlined),
+                                      ),
+                                    ),
+                                  ),
+                                  Positioned(
+                                    right: 4,
+                                    top: 4,
+                                    child: InkWell(
+                                      onTap: submitting
+                                          ? null
+                                          : () => setStateDialog(() {
+                                        deleteImageIds.add(img.id); // ✅ 삭제 선택
+                                      }),
+                                      child: Container(
+                                        decoration: const BoxDecoration(
+                                          color: Colors.black54,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        padding: const EdgeInsets.all(4),
+                                        child: const Icon(Icons.close, size: 14, color: Colors.white),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              );
+                            }
+
+                            // ✅ 2) 새로 추가한 로컬 이미지 카드
+                            final newIdx = index - totalExisting;
+                            final file = newImages[newIdx];
+
+                            return Stack(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Image.file(file, width: 92, height: 92, fit: BoxFit.cover),
+                                ),
+                                Positioned(
+                                  right: 4,
+                                  top: 4,
+                                  child: InkWell(
+                                    onTap: submitting
+                                        ? null
+                                        : () => setStateDialog(() {
+                                      newImages.removeAt(newIdx); // ✅ 새 이미지 제거
+                                    }),
+                                    child: Container(
+                                      decoration: const BoxDecoration(
+                                        color: Colors.black54,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      padding: const EdgeInsets.all(4),
+                                      child: const Icon(Icons.close, size: 14, color: Colors.white),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
                       ),
+
+                      const SizedBox(height: 8),
+                      Builder(builder: (_) {
+                        final keptExistingCount =
+                            existingImages.where((img) => !deleteImageIds.contains(img.id)).length;
+                        final total = keptExistingCount + newImages.length;
+                        return Text('$total/5', style: const TextStyle(color: Colors.black54, fontSize: 12));
+                      }),
 
                       const SizedBox(height: 18),
 
@@ -785,6 +976,7 @@ class TestCenterPageState extends State<TestCenterPage> {
                                 try {
                                   final rating = recommended ? 5 : 1;
 
+// 1) 리뷰 텍스트/옵션 수정
                                   await _updateReview(
                                     reviewId: review.id,
                                     rating: rating,
@@ -795,8 +987,16 @@ class TestCenterPageState extends State<TestCenterPage> {
                                     accessible: accessible,
                                   );
 
-                                  if (pickedImage != null) {
-                                    await _uploadReviewImage(reviewId: review.id, imageFile: pickedImage!);
+// 2) ✅ 선택된 기존 이미지 삭제
+                                  for (final id in deleteImageIds) {
+                                    try {
+                                      await _deleteReviewImageById(id);
+                                    } catch (_) {}
+                                  }
+
+// 3) ✅ 새 이미지 업로드
+                                  if (newImages.isNotEmpty) {
+                                    await _uploadReviewImages(reviewId: review.id, imageFiles: newImages);
                                   }
 
                                   await _refreshScore(); // ✅ 리뷰 수정 직후도 반영(만약 점수 정책이 있으면)
@@ -838,25 +1038,26 @@ class TestCenterPageState extends State<TestCenterPage> {
   }
 
   /// ====== API: 리뷰 이미지 업로드 (multipart) ======
-  Future<void> _uploadReviewImage({
+  Future<void> _uploadReviewImages({
     required int reviewId,
-    required File imageFile,
+    required List<File> imageFiles,
   }) async {
+    final files = imageFiles.take(5).toList(); // 최대 5장 제한
+
     final formData = FormData.fromMap({
       'files': [
-        await MultipartFile.fromFile(
-          imageFile.path,
-          filename: imageFile.path.split('/').last,
-        ),
+        for (final f in files)
+          await MultipartFile.fromFile(
+            f.path,
+            filename: f.path.split('/').last,
+          ),
       ],
     });
 
     await _apiClient.dio.post(
       '/api/reviews/$reviewId/images',
       data: formData,
-      options: Options(
-        headers: {Headers.contentTypeHeader: null}, // boundary 자동
-      ),
+      options: Options(headers: {Headers.contentTypeHeader: null}),
     );
   }
 
@@ -868,7 +1069,7 @@ class TestCenterPageState extends State<TestCenterPage> {
     required bool quiet,
     required bool accessible,
     required String content,
-    File? imageFile,
+    List<File> imageFiles = const [],
   }) async {
     final rating = recommended ? 5 : 1;
 
@@ -882,8 +1083,8 @@ class TestCenterPageState extends State<TestCenterPage> {
       accessible: accessible,
     );
 
-    if (imageFile != null) {
-      await _uploadReviewImage(reviewId: reviewId, imageFile: imageFile);
+    if (imageFiles.isNotEmpty) {
+      await _uploadReviewImages(reviewId: reviewId, imageFiles: imageFiles);
     }
   }
 
@@ -1590,7 +1791,6 @@ class TestCenterPageState extends State<TestCenterPage> {
     required ReviewItem r,
     required StateSetter setSheetState,
   }) {
-    final firstImage = r.imageUrls.isNotEmpty ? r.imageUrls.first : null;
     final isMine = (_myNickname != null &&
         _myNickname!.isNotEmpty &&
         r.authorNickname == _myNickname);
@@ -1625,27 +1825,69 @@ class TestCenterPageState extends State<TestCenterPage> {
             ),
 
             if (isMine)
-              TextButton.icon(
-                onPressed: () async {
-                  _closeSchoolSheetIfOpen();
-                  await Future.delayed(const Duration(milliseconds: 50));
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton.icon(
+                    onPressed: () async {
+                      _closeSchoolSheetIfOpen();
+                      await Future.delayed(const Duration(milliseconds: 50));
 
-                  final ok = await _showEditReviewDialog(school: school, review: r);
+                      final ok = await _showEditReviewDialog(school: school, review: r);
 
-                  if (ok == true) {
-                    _showSnack('리뷰가 수정되었습니다');
-                    await _loadSchoolsAndPlaceMarkers();
+                      if (ok == true) {
+                        _showSnack('리뷰가 수정되었습니다');
+                        await _loadSchoolsAndPlaceMarkers();
 
-                    final updatedSchool = await _fetchSchoolDetail(school.id);
-                    final newReviews = await _fetchReviewsForSchool(school.id);
-                    if (!mounted) return;
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      _showSchoolBottomSheet(school: updatedSchool, reviews: newReviews);
-                    });
-                  }
-                },
-                icon: const Icon(Icons.edit, size: 18),
-                label: const Text('수정'),
+                        final updatedSchool = await _fetchSchoolDetail(school.id);
+                        final newReviews = await _fetchReviewsForSchool(school.id);
+                        if (!mounted) return;
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          _showSchoolBottomSheet(school: updatedSchool, reviews: newReviews);
+                        });
+                      }
+                    },
+                    icon: const Icon(Icons.edit, size: 18),
+                    label: const Text('수정'),
+                  ),
+
+                  TextButton.icon(
+                    onPressed: () async {
+                      // 1) 삭제 확인
+                      final confirm = await _showDeleteReviewDialog();
+                      if (confirm != true) return;
+
+                      // 2) 바텀시트 닫고 삭제 처리
+                      _closeSchoolSheetIfOpen();
+                      await Future.delayed(const Duration(milliseconds: 50));
+
+                      try {
+                        await _deleteReview(r.id);
+
+                        // 점수 정책이 있으면 새로고침(원하면 빼도 됨)
+                        await _refreshScore();
+
+                        _showSnack('리뷰가 삭제되었습니다');
+
+                        // 3) 지도/학교정보 새로고침
+                        await _loadSchoolsAndPlaceMarkers();
+
+                        // 4) 다시 해당 학교 바텀시트 열기(삭제 반영된 상태)
+                        final updatedSchool = await _fetchSchoolDetail(school.id);
+                        final newReviews = await _fetchReviewsForSchool(school.id);
+                        if (!mounted) return;
+
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          _showSchoolBottomSheet(school: updatedSchool, reviews: newReviews);
+                        });
+                      } catch (e) {
+                        _showSnack('삭제 실패: $e');
+                      }
+                    },
+                    icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                    label: const Text('삭제', style: TextStyle(color: Colors.red)),
+                  ),
+                ],
               ),
           ],
         ),
@@ -1687,21 +1929,32 @@ class TestCenterPageState extends State<TestCenterPage> {
 
         const SizedBox(height: 10),
 
-        if (firstImage != null) ...[
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Image.network(
-              firstImage,
-              width: 160,
-              height: 120,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(
-                width: 160,
-                height: 120,
-                color: Colors.grey[200],
-                alignment: Alignment.center,
-                child: const Icon(Icons.broken_image_outlined),
-              ),
+        if (r.images.isNotEmpty) ...[
+          SizedBox(
+            height: 120,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: r.images.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, idx) {
+                final url = r.images[idx].imageUrl;
+                return ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.network(
+                    url,
+                    width: 160,
+                    height: 120,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      width: 160,
+                      height: 120,
+                      color: Colors.grey[200],
+                      alignment: Alignment.center,
+                      child: const Icon(Icons.broken_image_outlined),
+                    ),
+                  ),
+                );
+              },
             ),
           ),
           const SizedBox(height: 10),
@@ -1779,17 +2032,20 @@ class TestCenterPageState extends State<TestCenterPage> {
     bool quiet = true;
     bool accessible = true;
 
-    File? pickedImage;
+    List<File> pickedImages = [];
     String contentText = '';
     String? contentError;
 
     bool submitting = false;
 
-    Future<void> pickImage(StateSetter setStateDialog) async {
+    Future<void> pickImages(StateSetter setStateDialog) async {
       final picker = ImagePicker();
-      final xfile = await picker.pickImage(source: ImageSource.gallery);
-      if (xfile == null) return;
-      setStateDialog(() => pickedImage = File(xfile.path));
+      final xfiles = await picker.pickMultiImage();
+      if (xfiles.isEmpty) return;
+
+      setStateDialog(() {
+        pickedImages = xfiles.map((x) => File(x.path)).take(5).toList();
+      });
     }
 
     return await showDialog<bool>(
@@ -1901,33 +2157,50 @@ class TestCenterPageState extends State<TestCenterPage> {
                       Row(
                         children: [
                           ElevatedButton(
-                            onPressed: submitting ? null : () => pickImage(setStateDialog),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.grey[200],
-                              foregroundColor: Colors.black87,
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            ),
-                            child: const Text('파일 선택'),
+                            onPressed: submitting ? null : () => pickImages(setStateDialog),
+                            child: const Text('사진 여러 장 선택'),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              pickedImage == null ? '선택한 파일이 없습니다' : pickedImage!.path.split('/').last,
-                              style: const TextStyle(color: Colors.black54),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          if (pickedImage != null) ...[
-                            const SizedBox(width: 8),
-                            IconButton(
-                              tooltip: '선택 취소',
-                              onPressed: submitting ? null : () => setStateDialog(() => pickedImage = null),
-                              icon: const Icon(Icons.close, size: 18),
-                            ),
-                          ],
+                          const SizedBox(width: 10),
+                          Text('${pickedImages.length}/5'),
                         ],
                       ),
+                      if (pickedImages.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final f in pickedImages)
+                              Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(10),
+                                    child: Image.file(f, width: 72, height: 72, fit: BoxFit.cover),
+                                  ),
+                                  Positioned(
+                                    right: 0,
+                                    top: 0,
+                                    child: InkWell(
+                                      onTap: submitting
+                                          ? null
+                                          : () => setStateDialog(() {
+                                        pickedImages.remove(f);
+                                      }),
+                                      child: Container(
+                                        decoration: const BoxDecoration(
+                                          color: Colors.black54,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        padding: const EdgeInsets.all(4),
+                                        child: const Icon(Icons.close, size: 14, color: Colors.white),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                          ],
+                        ),
+                      ],
 
                       const SizedBox(height: 18),
 
@@ -2006,7 +2279,7 @@ class TestCenterPageState extends State<TestCenterPage> {
                                     quiet: quiet,
                                     accessible: accessible,
                                     content: text,
-                                    imageFile: pickedImage,
+                                    imageFiles: pickedImages,
                                   );
 
                                   await _refreshScore(); // ✅ 리뷰 작성 직후 점수 즉시 반영
